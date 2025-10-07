@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stringart-cache-v4'; // Increased version to force update
+const CACHE_NAME = 'stringart-cache-v5'; // Final version
 const urlsToCache = [
   './',
   './index.html',
@@ -6,7 +6,6 @@ const urlsToCache = [
   './index.js'
 ];
 
-// Delete old caches on activation
 self.addEventListener('activate', event => {
   const cacheWhitelist = [CACHE_NAME];
   event.waitUntil(
@@ -22,8 +21,8 @@ self.addEventListener('activate', event => {
   );
 });
 
-
 self.addEventListener('install', event => {
+  self.skipWaiting(); 
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then(cache => {
@@ -37,7 +36,6 @@ self.addEventListener('fetch', event => {
   event.respondWith(
     caches.match(event.request)
       .then(response => {
-        // Cache hit - return response
         if (response) {
           return response;
         }
