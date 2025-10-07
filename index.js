@@ -56,6 +56,14 @@ function App() {
     controlsContainer.className = 'controls';
     controlsContainer.setAttribute('role', 'group');
     controlsContainer.setAttribute('aria-label', 'Application Controls');
+    
+    // --- PWA Install Button ---
+    const installButton = document.createElement('button');
+    installButton.id = 'install-btn';
+    installButton.textContent = 'Cài đặt App';
+    installButton.style.display = 'none'; // Hidden by default
+    controlsContainer.appendChild(installButton);
+
     const connectButton = document.createElement('button');
     connectButton.textContent = 'Connect';
     connectButton.id = 'connect-btn';
@@ -460,6 +468,25 @@ void parseSingleStep(String stepData, int motorIndex, int stepIndex) {
     startButton.addEventListener('click', () => sendBleCommand('START'));
     pauseButton.addEventListener('click', () => sendBleCommand('PAUSE'));
     clearButton.addEventListener('click', handleClear);
+
+    // --- PWA Install Logic ---
+    let deferredPrompt;
+    window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredPrompt = e;
+        installButton.style.display = 'block';
+    });
+
+    installButton.addEventListener('click', async () => {
+        if (deferredPrompt) {
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            console.log(`User response to the install prompt: ${outcome}`);
+            deferredPrompt = null;
+            installButton.style.display = 'none';
+        }
+    });
+
     return appContainer;
 }
 const root = document.getElementById('app');
