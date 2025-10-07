@@ -1,10 +1,27 @@
-const CACHE_NAME = 'stringart-cache-v1';
+const CACHE_NAME = 'stringart-cache-v3'; // Increased version to force update
 const urlsToCache = [
   './',
   './index.html',
   './index.css',
-  './index.tsx'
+  './index.js'
 ];
+
+// Delete old caches on activation
+self.addEventListener('activate', event => {
+  const cacheWhitelist = [CACHE_NAME];
+  event.waitUntil(
+    caches.keys().then(cacheNames => {
+      return Promise.all(
+        cacheNames.map(cacheName => {
+          if (cacheWhitelist.indexOf(cacheName) === -1) {
+            return caches.delete(cacheName);
+          }
+        })
+      );
+    })
+  );
+});
+
 
 self.addEventListener('install', event => {
   event.waitUntil(
