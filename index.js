@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-// No longer needs: declare global, export {}
+// FIX: Removed 'export {}' to make this a standard script, not a module.
 function App() {
     const appContainer = document.createElement('div');
     appContainer.id = 'app-container';
