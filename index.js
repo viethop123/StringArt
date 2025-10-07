@@ -2,26 +2,20 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-// FIX: Removed 'export {}' to make this a standard script, not a module.
 function App() {
     const appContainer = document.createElement('div');
     appContainer.id = 'app-container';
-    // State variables for Bluetooth connection
     let bluetoothDevice = null;
     let txCharacteristic = null;
-    // Header
     const header = document.createElement('header');
     const title = document.createElement('h1');
     title.textContent = 'StringArt';
     header.appendChild(title);
     appContainer.appendChild(header);
-    // --- Input Filter ---
     function handleInput(event) {
         const input = event.target;
-        // Allow only numbers and '/'
         input.value = input.value.replace(/[^0-9/]/g, '');
     }
-    // Machine Sections
     const mainContent = document.createElement('main');
     for (let i = 1; i <= 4; i++) {
         const section = document.createElement('section');
@@ -45,11 +39,11 @@ function App() {
             label.setAttribute('for', `m${i}-${inputInfo.id}`);
             label.textContent = inputInfo.label;
             const input = document.createElement('input');
-            input.type = 'text'; // Changed to text to allow '/'
+            input.type = 'text';
             input.id = `m${i}-${inputInfo.id}`;
             input.name = `m${i}-${inputInfo.id}`;
             input.placeholder = inputInfo.placeholder;
-            input.addEventListener('input', handleInput); // Add filter
+            input.addEventListener('input', handleInput);
             inputGroup.appendChild(label);
             inputGroup.appendChild(input);
             inputContainer.appendChild(inputGroup);
@@ -58,7 +52,6 @@ function App() {
         mainContent.appendChild(section);
     }
     appContainer.appendChild(mainContent);
-    // Controls
     const controlsContainer = document.createElement('div');
     controlsContainer.className = 'controls';
     controlsContainer.setAttribute('role', 'group');
@@ -70,24 +63,23 @@ function App() {
     const sendButton = document.createElement('button');
     sendButton.textContent = 'Send';
     sendButton.id = 'send-btn';
-    sendButton.disabled = true; // Disabled until connected
+    sendButton.disabled = true;
     controlsContainer.appendChild(sendButton);
     const startButton = document.createElement('button');
     startButton.textContent = 'Start';
     startButton.id = 'start-btn';
-    startButton.disabled = true; // Disabled until connected
+    startButton.disabled = true;
     controlsContainer.appendChild(startButton);
     const pauseButton = document.createElement('button');
     pauseButton.textContent = 'Pause';
     pauseButton.id = 'pause-btn';
-    pauseButton.disabled = true; // Disabled until connected
+    pauseButton.disabled = true;
     controlsContainer.appendChild(pauseButton);
     const clearButton = document.createElement('button');
     clearButton.textContent = 'Clear';
     clearButton.id = 'clear-btn';
     controlsContainer.appendChild(clearButton);
     appContainer.appendChild(controlsContainer);
-    // Notification Area
     const notificationArea = document.createElement('div');
     notificationArea.className = 'notification-area';
     const notificationInput = document.createElement('input');
@@ -98,7 +90,6 @@ function App() {
     notificationInput.readOnly = true;
     notificationArea.appendChild(notificationInput);
     appContainer.appendChild(notificationArea);
-    // --- Event Handlers ---
     function setNotification(message, isError = false) {
         notificationInput.value = message;
         notificationInput.style.color = isError ? '#D32F2F' : '#388E3C';
@@ -109,7 +100,6 @@ function App() {
         const TX_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
         try {
             setNotification('Đang tìm kiếm thiết bị...');
-            // FIX: Cast navigator to 'any' to avoid module requirement
             bluetoothDevice = await navigator.bluetooth.requestDevice({
                 filters: [{ services: [UART_SERVICE_UUID] }],
                 optionalServices: [UART_SERVICE_UUID]
@@ -174,7 +164,7 @@ function App() {
                 const vpStr = document.getElementById(`m${i}-vp`).value.trim();
                 const dirStr = document.getElementById(`m${i}-dir`).value.trim();
                 if (!vStr && !vpStr && !dirStr) {
-                    motorData.push('0,0,0'); // Default for empty motor
+                    motorData.push('0,0,0');
                     continue;
                 }
                 const vArr = (vStr || '0').split('/').map(s => s.trim());
@@ -211,7 +201,6 @@ function App() {
         }
         setNotification('Đã xóa dữ liệu trên App');
     }
-    // --- Arduino Code Modal ---
     function showArduinoCodeModal() {
         const modalOverlay = document.createElement('div');
         modalOverlay.className = 'modal-overlay';
@@ -286,7 +275,7 @@ void setup() {
   bleSerial.begin(9600); 
 
   for (int i=0; i<4; i++) {
-    steppers[i]->setMaxSpeed(4000); // Adjust as needed
+    steppers[i]->setMaxSpeed(4000);
   }
 }
 
