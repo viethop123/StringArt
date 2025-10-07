@@ -1,5 +1,5 @@
 {
-  "name": "StringArt_V01",
-  "description": "Prompt Gemini in this simple example",
+  "name": "StringArt PWA Controller",
+  "description": "A Progressive Web App to control the StringArt machine via Web Bluetooth.",
   "requestFramePermissions": []
 }
