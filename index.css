@@ -9,6 +9,8 @@
     --input-border-color: #ccc;
     --input-focus-border: var(--primary-color);
     --label-color: #555;
+    --install-btn-bg: #28a745;
+    --install-btn-hover-bg: #218838;
 }
 
 body {
@@ -106,6 +108,7 @@ header h1 {
     border-radius: 6px;
     cursor: pointer;
     transition: background-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+    color: var(--text-color);
 }
 
 .controls button:hover {
@@ -123,6 +126,20 @@ header h1 {
     cursor: not-allowed;
     box-shadow: none;
 }
+
+#install-btn {
+    background-color: var(--install-btn-bg);
+    color: white;
+    border-color: var(--install-btn-bg);
+    grid-column: 1 / -1; /* Make button span full width */
+    margin-bottom: 10px;
+}
+
+#install-btn:hover {
+    background-color: var(--install-btn-hover-bg);
+    border-color: var(--install-btn-hover-bg);
+}
+
 
 .notification-area input {
     width: 100%;
