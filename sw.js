@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stringart-cache-v5'; // Final version
+const CACHE_NAME = 'stringart-cache-v6'; // Final, stable version
 const urlsToCache = [
   './',
   './index.html',
