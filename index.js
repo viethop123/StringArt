@@ -2,6 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
+// No longer needs: declare global, export {}
 function App() {
     const appContainer = document.createElement('div');
     appContainer.id = 'app-container';
@@ -108,6 +109,7 @@ function App() {
         const TX_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
         try {
             setNotification('Đang tìm kiếm thiết bị...');
+            // FIX: Cast navigator to 'any' to avoid module requirement
             bluetoothDevice = await navigator.bluetooth.requestDevice({
                 filters: [{ services: [UART_SERVICE_UUID] }],
                 optionalServices: [UART_SERVICE_UUID]
