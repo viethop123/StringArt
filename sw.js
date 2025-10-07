@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stringart-cache-v3'; // Increased version to force update
+const CACHE_NAME = 'stringart-cache-v4'; // Increased version to force update
 const urlsToCache = [
   './',
   './index.html',
