@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stringart-cache-v6'; // Final, stable version
+const CACHE_NAME = 'stringart-cache-v7'; // A fresh start
 const urlsToCache = [
   './',
   './index.html',
@@ -34,13 +34,6 @@ self.addEventListener('install', event => {
 
 self.addEventListener('fetch', event => {
   event.respondWith(
-    caches.match(event.request)
-      .then(response => {
-        if (response) {
-          return response;
-        }
-        return fetch(event.request);
-      }
-    )
+    fetch(event.request).catch(() => caches.match(event.request))
   );
 });
