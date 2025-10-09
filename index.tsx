@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 
 export default function MotorControl() {
@@ -8,28 +8,51 @@ export default function MotorControl() {
     { steps: 0, rpm: 0, dir: 0 },
     { steps: 0, rpm: 0, dir: 0 },
   ]);
-
   const [port, setPort] = useState<any>(null);
   const [monitor, setMonitor] = useState<string>("System ready.\n");
 
+  // đọc phản hồi serial realtime
+  useEffect(() => {
+    if (!port) return;
+    const reader = port.readable.getReader();
+    const decoder = new TextDecoder();
+    let active = true;
+    (async () => {
+      while (active) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) {
+          setMonitor((m) => m + decoder.decode(value));
+        }
+      }
+    })();
+    return () => {
+      active = false;
+      reader.releaseLock();
+    };
+  }, [port]);
+
   async function connect() {
-    const p = await (navigator as any).serial.requestPort();
-    await p.open({ baudRate: 9600 });
-    setPort(p);
-    setMonitor((m) => m + "✅ Connected.\n");
+    try {
+      const p = await (navigator as any).serial.requestPort();
+      await p.open({ baudRate: 9600 });
+      setPort(p);
+      setMonitor((m) => m + "✅ Connected to serial.\n");
+    } catch (e) {
+      alert("Không thể mở cổng serial.");
+    }
   }
 
   async function sendCommand(cmd: string) {
     if (!port) return alert("Chưa kết nối!");
-
     const writer = port.writable.getWriter();
     await writer.write(new TextEncoder().encode(cmd + "\n"));
     writer.releaseLock();
-
     setMonitor((m) => m + "➡️ Sent: " + cmd + "\n");
   }
 
   function formatCommand() {
+    // dạng: 100,1000,1,0;200,800,0,0;...
     return motors.map((m) => `${m.steps},${m.rpm},${m.dir},0`).join(";") + ";";
   }
 
@@ -37,10 +60,12 @@ export default function MotorControl() {
     <div className="p-4 space-y-3">
       <h1 className="text-xl font-bold">🧠 Motor Controller</h1>
 
-      <Button onClick={connect}>Kết nối</Button>
-      <Button onClick={() => sendCommand(formatCommand())}>Gửi dữ liệu</Button>
-      <Button onClick={() => sendCommand("START")}>Start</Button>
-      <Button onClick={() => sendCommand("STOP")}>Stop</Button>
+      <div className="space-x-2">
+        <Button onClick={connect}>Kết nối</Button>
+        <Button onClick={() => sendCommand(formatCommand())}>Gửi dữ liệu</Button>
+        <Button onClick={() => sendCommand("START")}>Start</Button>
+        <Button onClick={() => sendCommand("STOP")}>Stop</Button>
+      </div>
 
       <div className="grid grid-cols-4 gap-2 mt-3">
         {motors.map((m, i) => (
@@ -91,7 +116,7 @@ export default function MotorControl() {
         ))}
       </div>
 
-      <div className="mt-4 p-2 bg-black text-green-400 font-mono h-48 overflow-y-scroll">
+      <div className="mt-4 p-2 bg-black text-green-400 font-mono h-56 overflow-y-scroll">
         {monitor.split("\n").map((line, i) => (
           <div key={i}>{line}</div>
         ))}
