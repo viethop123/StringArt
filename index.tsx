@@ -14,14 +14,15 @@ function App() {
     const appContainer = document.createElement('div');
     appContainer.id = 'app-container';
 
-    // --- State Management (Simplified for Test) ---
+    // --- State Management ---
     let bluetoothDevice: any = null;
     let txCharacteristic: any = null;
-    let isConnected = false;
+    let rxCharacteristic: any = null; // Characteristic to receive data from Arduino
+    let connectionState: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' = 'DISCONNECTED';
 
     // --- Constants for HM-10/AT-09 ---
     const UART_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
-    const UART_TX_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
+    const UART_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"; // Used for both TX and RX
 
     // --- DOM Elements ---
     const connectButton = document.createElement('button');
@@ -32,18 +33,22 @@ function App() {
     const notificationInput = document.createElement('input');
     const actionButtons = [sendButton, startButton, pauseButton, clearButton];
     const inputElements: HTMLInputElement[] = [];
-
-
+    
     // --- UI State Update Function ---
     function updateUIState() {
-        connectButton.textContent = isConnected ? 'Disconnect' : 'Connect';
-        connectButton.disabled = false; // Connect button is always enabled
+        const isConnected = connectionState === 'CONNECTED';
+        const isConnecting = connectionState === 'CONNECTING';
 
-        // All other buttons are disabled for this test
-        actionButtons.forEach(btn => btn.disabled = true);
+        connectButton.textContent = isConnected ? 'Disconnect' : 'Connect';
+        connectButton.disabled = isConnecting;
+
+        // All other buttons are disabled unless fully connected
+        actionButtons.forEach(btn => btn.disabled = !isConnected);
         
-        if (isConnected) {
-             notificationInput.placeholder = 'Đã kết nối. Đã gửi PING.';
+        if (isConnecting) {
+            notificationInput.placeholder = 'Đang xử lý kết nối...';
+        } else if (isConnected) {
+            // The success message is set by the handshake logic
         } else {
              notificationInput.value = '';
              notificationInput.placeholder = 'Chưa kết nối Bluetooth';
@@ -139,21 +144,63 @@ function App() {
     updateUIState();
 
 
-    // --- EVENT HANDLERS (SIMPLIFIED FOR TEST) ---
+    // --- EVENT HANDLERS ---
 
     function setNotification(message: string, isError = false) {
         notificationInput.value = message;
         notificationInput.style.color = isError ? '#D32F2F' : '#388E3C';
     }
     
+    // --- HANDSHAKE LOGIC ---
+    let handshakeResolver: ((value: unknown) => void) | null = null;
+    let handshakeTimeout: number | null = null;
+    
+    function handleRxData(event: any) {
+        const value = event.target.value;
+        const decoder = new TextDecoder('utf-8');
+        const receivedString = decoder.decode(value).trim();
+        
+        if (receivedString === 'ACK' && handshakeResolver) {
+            if (handshakeTimeout) clearTimeout(handshakeTimeout);
+            handshakeResolver(true); // Handshake successful
+            handshakeResolver = null;
+        }
+    }
+
+    async function performHandshake(): Promise<boolean> {
+        return new Promise(async (resolve, reject) => {
+            handshakeResolver = resolve;
+            
+            // Set a timeout for the handshake
+            handshakeTimeout = window.setTimeout(() => {
+                handshakeResolver = null;
+                reject(new Error('Arduino không phản hồi.'));
+            }, 5000); // 5 seconds timeout
+
+            // Send PING to start the handshake
+            try {
+                setNotification('Đã kết nối, đang gửi PING...');
+                const encoder = new TextEncoder();
+                await txCharacteristic.writeValue(encoder.encode("PING\n"));
+            } catch (error) {
+                if (handshakeTimeout) clearTimeout(handshakeTimeout);
+                reject(error);
+            }
+        });
+    }
+
+    // --- CONNECTION LOGIC ---
     async function handleConnect() {
         if (!navigator.bluetooth) {
             setNotification('Lỗi: Web Bluetooth không được hỗ trợ!', true);
             return;
         }
+
+        connectionState = 'CONNECTING';
+        updateUIState();
+        
         try {
             setNotification('Đang tìm thiết bị...');
-            
             bluetoothDevice = await navigator.bluetooth.requestDevice({
                 filters: [{ services: [UART_SERVICE_UUID] }],
             });
@@ -163,47 +210,58 @@ function App() {
             const server = await bluetoothDevice.gatt.connect();
             
             const service = await server.getPrimaryService(UART_SERVICE_UUID);
-            txCharacteristic = await service.getCharacteristic(UART_TX_CHARACTERISTIC_UUID);
+            const characteristic = await service.getCharacteristic(UART_CHARACTERISTIC_UUID);
+            txCharacteristic = characteristic;
+            rxCharacteristic = characteristic;
 
-            isConnected = true;
-            setNotification(`Kết nối thành công! Đang gửi PING...`, false);
+            // Start listening for data from Arduino
+            await rxCharacteristic.startNotifications();
+            rxCharacteristic.addEventListener('characteristicvaluechanged', handleRxData);
+
+            // Perform handshake
+            await performHandshake();
+
+            // Handshake successful
+            connectionState = 'CONNECTED';
+            setNotification('Kết nối thành công (Đã xác nhận)!', false);
             updateUIState();
-            
-            // Send the PING command
-            const encoder = new TextEncoder();
-            await txCharacteristic.writeValue(encoder.encode("PING\n"));
-            setNotification(`Đã gửi PING tới Arduino.`, false);
             
         } catch (error) {
             let errorMessage = 'Kết nối thất bại.';
             if (error instanceof Error) {
-                if (error.name === 'NotFoundError') {
-                    errorMessage = 'Không tìm thấy thiết bị nào.';
-                } else {
-                     errorMessage = error.message;
-                }
+                errorMessage = error.message;
             }
             setNotification(errorMessage, true);
-            onDisconnected(); // Reset state on failure
+            if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+                bluetoothDevice.gatt.disconnect();
+            } else {
+                onDisconnected(); // Reset state if connection failed early
+            }
         }
     }
     
     function onDisconnected() {
-        if(isConnected) { // Only show message if it was previously connected
+        if(connectionState === 'CONNECTED') {
              setNotification('Đã mất kết nối Bluetooth.', true);
         }
-        isConnected = false;
+        connectionState = 'DISCONNECTED';
         bluetoothDevice = null;
         txCharacteristic = null;
+        rxCharacteristic = null; // Clear RX characteristic
         updateUIState();
     }
 
     async function handleDisconnect() {
-        if (!bluetoothDevice) return;
+        if (!bluetoothDevice || !bluetoothDevice.gatt.connected) return;
         try {
             setNotification('Đang ngắt kết nối...');
+            // Stop listening before disconnecting
+            if(rxCharacteristic) {
+                await rxCharacteristic.stopNotifications();
+                rxCharacteristic.removeEventListener('characteristicvaluechanged', handleRxData);
+            }
             await bluetoothDevice.gatt.disconnect();
-            // The 'gattserverdisconnected' event will handle the rest.
+            // The 'gattserverdisconnected' event will handle the rest of the cleanup.
         } catch (error) {
             setNotification('Ngắt kết nối thất bại.', true);
             onDisconnected(); // Force reset state
@@ -223,7 +281,7 @@ function App() {
         
         const modalTitle = document.createElement('h2');
         modalTitle.className = 'modal-title';
-        modalTitle.textContent = 'Mã Nguồn Arduino (Kiểm Tra Kết Nối)';
+        modalTitle.textContent = 'Mã Arduino (Handshake)';
         
         const closeButton = document.createElement('button');
         closeButton.className = 'modal-close-btn';
@@ -236,11 +294,11 @@ function App() {
         modalBody.className = 'modal-body';
         
         const instructionsHTML = `
-            <p style="color: green; font-weight: bold;">Đây là mã nguồn siêu đơn giản để kiểm tra kết nối.</p>
+            <p style="color: green; font-weight: bold;">Mã nguồn này thực hiện cơ chế "bắt tay" (handshake).</p>
             <ul>
-                <li>Khi khởi động, nó sẽ in "Arduino san sang. Cho ket noi..." ra Serial Monitor.</li>
-                <li>Nó sẽ chỉ lắng nghe tín hiệu "PING" từ ứng dụng.</li>
-                <li>Khi nhận được "PING", nó sẽ in "Da ket noi BT".</li>
+                <li>Nó sẽ chờ nhận tín hiệu "PING" từ ứng dụng.</li>
+                <li>Khi nhận được "PING", nó sẽ gửi lại tín hiệu "ACK" để xác nhận kết nối.</li>
+                <li>Điều này đảm bảo trạng thái trên app và Arduino luôn đồng bộ.</li>
             </ul>
         `;
         
@@ -255,9 +313,8 @@ bool commandReady = false;
 void setup() {
   Serial.begin(9600);
   bleSerial.begin(9600);
-  inputBuffer.reserve(50); // Reserve memory for the input string
+  inputBuffer.reserve(50);
 
-  // Clear any garbage data from the Bluetooth module on startup
   delay(100);
   while(bleSerial.available()) {
     bleSerial.read();
@@ -267,7 +324,7 @@ void setup() {
 }
 
 void loop() {
-  // Read incoming data from Bluetooth non-blockingly
+  // Read incoming data from Bluetooth
   while (bleSerial.available()) {
     char c = bleSerial.read();
     
@@ -275,17 +332,19 @@ void loop() {
     if (c == 10) { 
       commandReady = true;
       break; 
-    } else if (c >= 32) { // Only add printable characters
+    } else if (c >= 32) {
       inputBuffer += c;
     }
   }
 
   // If a full command has been received
   if (commandReady) {
-    inputBuffer.trim(); // Remove any leading/trailing whitespace
+    inputBuffer.trim();
     
     if (inputBuffer.equals("PING")) {
-      Serial.println("Da ket noi BT");
+      Serial.println("Da nhan PING, dang gui ACK...");
+      // Send Acknowledge back to the app
+      bleSerial.println("ACK"); 
     }
     
     // Reset for the next command
@@ -338,12 +397,18 @@ void loop() {
     // --- Attach Event Listeners ---
     arduinoCodeButton.addEventListener('click', showArduinoCodeModal);
     connectButton.addEventListener('click', () => {
-        if (isConnected) {
+        if (connectionState === 'CONNECTED') {
             handleDisconnect();
         } else {
             handleConnect();
         }
     });
+
+    // Dummy listeners for other buttons (they are disabled anyway in this version)
+    sendButton.addEventListener('click', () => console.log('Send Clicked'));
+    startButton.addEventListener('click', () => console.log('Start Clicked'));
+    pauseButton.addEventListener('click', () => console.log('Pause Clicked'));
+    clearButton.addEventListener('click', () => console.log('Clear Clicked'));
 
     return appContainer;
 }
