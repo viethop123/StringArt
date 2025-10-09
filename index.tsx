@@ -358,7 +358,7 @@ void setup() {
 
   for (int i=0; i<4; i++) {
     steppers[i]->setMaxSpeed(8000.0); // Set a high initial max speed
-    steppers[i]->setAcceleration(2000.0); // Add acceleration for smoother start/stop
+    steppers[i]->setAcceleration(1000.0); // Set a moderate acceleration
   }
 }
 
@@ -418,7 +418,9 @@ void checkAndLoadNextStep(AccelStepper* stepper, int motorIndex) {
     if (stepper->distanceToGo() == 0) {
         if (currentStepIndex[motorIndex] < sequenceLengths[motorIndex]) {
             MotorStep next = motorSequences[motorIndex][currentStepIndex[motorIndex]];
-            stepper->setMaxSpeed(next.speed); // CRITICAL: Use setMaxSpeed for move-based operations for correct RPM
+            // Per user feedback: use abs() for speed and set acceleration for each move.
+            stepper->setMaxSpeed(abs(next.speed)); 
+            stepper->setAcceleration(1000.0);
             stepper->moveTo(stepper->currentPosition() + next.steps);
             currentStepIndex[motorIndex]++;
         }
