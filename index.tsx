@@ -18,7 +18,6 @@ function App() {
     let bluetoothDevice: any = null;
     let txCharacteristic: any = null;
     let isConnected = false;
-    let isBusy = false; // Prevents sending multiple commands at once
 
     // --- Constants for HM-10/AT-09 ---
     const UART_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
@@ -32,17 +31,17 @@ function App() {
     const clearButton = document.createElement('button');
     const notificationInput = document.createElement('input');
     const actionButtons = [sendButton, startButton, pauseButton, clearButton];
+    const allButtons = [connectButton, ...actionButtons];
 
     // --- UI State Update Function ---
-    function updateUIState() {
+    function updateUIState(isBusy = false) {
         connectButton.textContent = isConnected ? 'Disconnect' : 'Connect';
         
         if (isBusy) {
-             actionButtons.forEach(btn => btn.disabled = true);
-             connectButton.disabled = true;
+             allButtons.forEach(btn => btn.disabled = true);
         } else {
-             actionButtons.forEach(btn => btn.disabled = !isConnected);
              connectButton.disabled = false;
+             actionButtons.forEach(btn => btn.disabled = !isConnected);
         }
 
         notificationInput.placeholder = isConnected ? 'Đã kết nối' : 'Chưa kết nối Bluetooth';
@@ -171,6 +170,7 @@ function App() {
             return;
         }
         try {
+            updateUIState(true); // Lock UI
             setNotification('Đang tìm thiết bị...');
             bluetoothDevice = await navigator.bluetooth.requestDevice({
                 filters: [{ services: [UART_SERVICE_UUID] }],
@@ -197,7 +197,7 @@ function App() {
             setNotification(errorMessage, true);
             isConnected = false;
         } finally {
-            updateUIState();
+            updateUIState(false); // Unlock UI
         }
     }
 
@@ -206,12 +206,13 @@ function App() {
         isConnected = false;
         bluetoothDevice = null;
         txCharacteristic = null;
-        updateUIState();
+        updateUIState(false);
     }
 
     async function handleDisconnect() {
         if (!bluetoothDevice) return;
         try {
+            updateUIState(true);
             setNotification('Đang ngắt kết nối...');
             await bluetoothDevice.gatt.disconnect();
         } catch (error) {
@@ -220,24 +221,25 @@ function App() {
                 errorMessage = error.message;
             }
             setNotification(errorMessage, true);
+        } finally {
+            // onDisconnected will be called automatically
         }
     }
 
 
     async function sendBleCommand(command: string) {
-        if (!isConnected || !txCharacteristic || isBusy) {
+        if (!isConnected || !txCharacteristic) {
             setNotification('Lỗi: Chưa sẵn sàng để gửi lệnh.', true);
             return;
         }
 
-        isBusy = true;
-        updateUIState();
+        updateUIState(true); // Lock UI
         
         try {
-            setNotification(`Đang gửi: ${command}...`);
+            setNotification(`Đang gửi: ${command.substring(0, 30)}...`);
             const encoder = new TextEncoder();
             await txCharacteristic.writeValue(encoder.encode(command + '\n')); // Append newline
-            setNotification(`Đã gửi thành công: ${command}`, false);
+            setNotification(`Đã gửi thành công: ${command.substring(0, 30)}`, false);
         } catch (error) {
             let errorMessage = 'Gửi lệnh thất bại.';
             if (error instanceof Error) {
@@ -245,22 +247,39 @@ function App() {
             }
             setNotification(errorMessage, true);
         } finally {
+            // Wait a bit before allowing new commands to prevent merging
             setTimeout(() => {
-                isBusy = false;
-                updateUIState();
-            }, 150); // Wait a bit before allowing new commands
+                updateUIState(false); // Unlock UI
+            }, 200); 
         }
     }
     
     function handleSend() {
+        // This function combines steps from different inputs into a single sequence for each motor.
+        // Format: V1,VP1,D1|V2,VP2,D2;...
         let dataString = '';
         for (let i = 1; i <= 4; i++) {
-            const v = (document.getElementById(`m${i}-v`) as HTMLInputElement).value || "0";
-            const vp = (document.getElementById(`m${i}-vp`) as HTMLInputElement).value || "0";
-            const dir = (document.getElementById(`m${i}-dir`) as HTMLInputElement).value || "0";
+            const v_input = (document.getElementById(`m${i}-v`) as HTMLInputElement).value || "0";
+            const vp_input = (document.getElementById(`m${i}-vp`) as HTMLInputElement).value || "0";
+            const dir_input = (document.getElementById(`m${i}-dir`) as HTMLInputElement).value || "0";
 
-            const motorPart = `${v}/${vp}/${dir}`;
-            dataString += motorPart;
+            const revs = v_input.split('/');
+            const rpms = vp_input.split('/');
+            const dirs = dir_input.split('/');
+
+            let motorSequence = [];
+            const stepCount = revs.length;
+
+            for (let j = 0; j < stepCount; j++) {
+                const rev = revs[j] || '0';
+                // Use the first value if subsequent ones are missing
+                const rpm = rpms[j] || rpms[0] || '0'; 
+                const dir = dirs[j] || dirs[0] || '0';
+                if (rev !== '0') { // Only add steps that have movement
+                    motorSequence.push(`${rev},${rpm},${dir}`);
+                }
+            }
+            dataString += motorSequence.join('|');
             if (i < 4) {
                 dataString += ';';
             }
@@ -314,10 +333,11 @@ function App() {
             <h3>Mục tiêu: Phiên bản cuối cùng, đã sửa lỗi</h3>
             <p>Mã nguồn này đã được viết lại cẩn thận để khắc phục tất cả các lỗi trước đó.</p>
             <ul>
-                <li><b>Sửa lỗi nghiêm trọng:</b> Đã sửa lỗi đọc ký tự xuống dòng ('\\n' -> '\\n'), đảm bảo Arduino nhận lệnh chính xác.</li>
+                <li><b>Sửa lỗi nghiêm trọng:</b> Đã sửa lỗi đọc ký tự xuống dòng (<code>'\\n' -> '\\n'</code>), đảm bảo Arduino nhận lệnh chính xác.</li>
                 <li><b>Chống nhiễu:</b> Tự động xóa các dữ liệu "rác" từ module Bluetooth khi khởi động.</li>
                 <li><b>Phân tích dữ liệu mạnh mẽ:</b> Thuật toán mới, phân tích chính xác chuỗi dữ liệu phức tạp cho cả 4 motor.</li>
                 <li><b>Tốc độ chính xác:</b> Đọc dữ liệu mà không làm chậm hệ thống, đảm bảo motor chạy đúng tốc độ bạn nhập.</li>
+                 <li><b>An toàn dữ liệu:</b> Luôn xóa sạch dữ liệu cũ trước khi nhận lệnh mới.</li>
             </ul>
             <h3>Đấu dây</h3>
              <ul>
@@ -335,25 +355,27 @@ function App() {
 
 #define MotorInterfaceType AccelStepper::DRIVER
 
+// --- Khai báo các motor ---
 AccelStepper stepper1(MotorInterfaceType, 2, 3);
 AccelStepper stepper2(MotorInterfaceType, 4, 5);
 AccelStepper stepper3(MotorInterfaceType, 6, 7);
 AccelStepper stepper4(MotorInterfaceType, 8, 9);
 AccelStepper* steppers[] = {&stepper1, &stepper2, &stepper3, &stepper4};
 
+// --- Bluetooth ---
 SoftwareSerial bleSerial(10, 11); // RX, TX
 
 // --- Cấu hình ---
 const long STEPS_PER_REV = 3200; 
-const int MAX_SEQUENCE_STEPS = 10;
+const int MAX_SEQUENCE_STEPS = 15; // Tăng số bước cho phép
 String inputBuffer = "";
 bool commandReady = false;
 
+// --- Cấu trúc dữ liệu ---
 struct MotorStep {
   long steps;
   float speed;
 };
-
 MotorStep motorSequences[4][MAX_SEQUENCE_STEPS];
 int sequenceLengths[4] = {0};
 int currentStepIndex[4] = {0};
@@ -375,59 +397,65 @@ String getValue(String data, char separator, int index) {
   return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 
-
+// --- SETUP ---
 void setup() {
   Serial.begin(9600);
   bleSerial.begin(9600);
   inputBuffer.reserve(256); 
   
   // Xóa bộ đệm Bluetooth để loại bỏ nhiễu khi khởi động
+  delay(100); // Chờ module ổn định
   while(bleSerial.available()) bleSerial.read();
 
   for (int i = 0; i < 4; i++) {
     steppers[i]->setMaxSpeed(8000); 
     steppers[i]->setAcceleration(2000);
   }
-  Serial.println("Arduino san sang. Phien ban cuoi cung.");
+  Serial.println("Arduino san sang. Phien ban hoan chinh.");
 }
 
+// --- MAIN LOOP ---
 void loop() {
-  readBluetooth();
+  readBluetooth(); // Luôn đọc dữ liệu mà không làm chậm loop
 
   if (commandReady) {
     inputBuffer.trim();
     parseCommand(inputBuffer);
-    inputBuffer = "";
+    inputBuffer = ""; // Xóa buffer sau khi xử lý
     commandReady = false;
   }
 
   if (isRunning) {
-    bool anyMotorStillNeedsToRun = false;
+    bool anyMotorStillMoving = false;
     for (int i = 0; i < 4; i++) {
-        // Nếu motor đã chạy xong bước hiện tại
+        // Nếu motor đã chạy xong bước hiện tại, nạp bước tiếp theo
         if (steppers[i]->distanceToGo() == 0) {
-            // Nạp bước tiếp theo nếu có
             loadNextStepForMotor(i);
         }
-        // Nếu motor vẫn còn quãng đường để đi (sau khi đã nạp lệnh mới)
+        // Nếu motor vẫn còn quãng đường để đi, tiếp tục chạy
         if (steppers[i]->distanceToGo() != 0) {
-            anyMotorStillNeedsToRun = true;
+            anyMotorStillMoving = true;
+            steppers[i]->run();
         }
-        steppers[i]->run();
     }
     
-    if (!anyMotorStillNeedsToRun) {
+    // Nếu không còn motor nào cần chạy nữa, dừng lại
+    if (!anyMotorStillMoving) {
         isRunning = false;
         Serial.println("!!! HOAN THANH TAT CA CHUOI LENH !!!");
     }
   }
 }
 
+// --- Các hàm chức năng ---
+
 void readBluetooth() {
     while (bleSerial.available()) {
         char c = bleSerial.read();
-        if (c == '\\n') { // SỬA LỖI QUAN TRỌNG NHẤT
+        // SỬA LỖI QUAN TRỌNG NHẤT: '\n' thay vì '\\n'
+        if (c == '\n') { 
             commandReady = true;
+            return; // Thoát ngay khi tìm thấy lệnh hoàn chỉnh
         } else if (c >= 32) { // Chỉ thêm các ký tự in được
             inputBuffer += c;
         }
@@ -448,7 +476,9 @@ void parseCommand(String command) {
 
 void startMotors() {
     bool hasData = false;
-    for (int i = 0; i < 4; i++) if (sequenceLengths[i] > 0) hasData = true;
+    for (int i = 0; i < 4; i++) {
+      if (sequenceLengths[i] > 0) hasData = true;
+    }
     
     if (!hasData) {
         Serial.println("Loi: Khong co du lieu de chay.");
@@ -470,7 +500,8 @@ void loadNextStepForMotor(int motorIndex) {
     }
 
     MotorStep next = motorSequences[motorIndex][currentStepIndex[motorIndex]];
-
+    
+    // Chỉ nạp lệnh nếu có bước chạy thực sự
     if (next.steps != 0) {
       float desiredSpeed = fabs(next.speed);
       if (desiredSpeed < 1.0) desiredSpeed = 1.0;
@@ -482,35 +513,54 @@ void loadNextStepForMotor(int motorIndex) {
 
 void parseDataString(String data) {
     Serial.println("Nhan chuoi du lieu. Bat dau phan tich...");
-    // Xóa sạch dữ liệu cũ
-    for(int i = 0; i < 4; i++) sequenceLengths[i] = 0;
+    // XÓA SẠCH DỮ LIỆU CŨ ĐỂ ĐẢM BẢO AN TOÀN
+    for(int i = 0; i < 4; i++) {
+      sequenceLengths[i] = 0;
+      for(int j = 0; j < MAX_SEQUENCE_STEPS; j++) {
+        motorSequences[i][j] = {0, 0.0};
+      }
+    }
 
+    // --- THUẬT TOÁN PHÂN TÍCH MỚI, MẠNH MẼ ---
+    int lastMotorDelim = -1;
     for (int motorIdx = 0; motorIdx < 4; motorIdx++) {
-        String motorPart = getValue(data, ';', motorIdx);
+        int currentMotorDelim = data.indexOf(';', lastMotorDelim + 1);
+        if (currentMotorDelim == -1 && motorIdx < 3) {
+           // Nếu không tìm thấy ';' và chưa phải motor cuối, có thể là cuối chuỗi
+           currentMotorDelim = data.length();
+        } else if (motorIdx == 3) {
+           currentMotorDelim = data.length();
+        }
+
+        String motorPart = data.substring(lastMotorDelim + 1, currentMotorDelim);
+        lastMotorDelim = currentMotorDelim;
         if (motorPart.length() == 0) continue;
 
-        String v_part = getValue(motorPart, '/', 0);
-        String vp_part = getValue(motorPart, '/', 1);
-        String dir_part = getValue(motorPart, '/', 2);
-
         int stepIndex = 0;
-        for (int i = 0; i < MAX_SEQUENCE_STEPS; i++) {
-            String revStr = getValue(v_part, '/', i); // App dùng / làm separator
-            if (revStr.length() == 0) break;
+        int lastStepDelim = -1;
+        while(stepIndex < MAX_SEQUENCE_STEPS) {
+            int currentStepDelim = motorPart.indexOf('|', lastStepDelim + 1);
+            if (currentStepDelim == -1) {
+                currentStepDelim = motorPart.length();
+            }
+            
+            String stepPart = motorPart.substring(lastStepDelim + 1, currentStepDelim);
+            lastStepDelim = currentStepDelim;
 
-            String rpmStr = getValue(vp_part, '/', i);
-            if (rpmStr.length() == 0) rpmStr = getValue(vp_part, '/', 0); // Dùng giá trị đầu nếu thiếu
+            if(stepPart.length() > 0) {
+                String revStr = getValue(stepPart, ',', 0);
+                String rpmStr = getValue(stepPart, ',', 1);
+                String dirStr = getValue(stepPart, ',', 2);
+                
+                float revolutions = revStr.toFloat();
+                float rpm = rpmStr.toFloat();
+                int direction = dirStr.toInt();
 
-            String dirStr = getValue(dir_part, '/', i);
-            if (dirStr.length() == 0) dirStr = getValue(dir_part, '/', 0); // Dùng giá trị đầu nếu thiếu
-
-            float revolutions = revStr.toFloat();
-            float rpm = rpmStr.toFloat();
-            int direction = dirStr.toInt();
-
-            motorSequences[motorIdx][stepIndex].steps = (long)(revolutions * STEPS_PER_REV * (direction == 1 ? 1 : -1));
-            motorSequences[motorIdx][stepIndex].speed = (rpm * STEPS_PER_REV / 60.0f) * (direction == 1 ? 1 : -1);
-            stepIndex++;
+                motorSequences[motorIdx][stepIndex].steps = (long)(revolutions * STEPS_PER_REV * (direction == 1 ? 1 : -1));
+                motorSequences[motorIdx][stepIndex].speed = (rpm * STEPS_PER_REV / 60.0f) * (direction == 1 ? 1 : -1);
+                stepIndex++;
+            }
+            if(lastStepDelim == motorPart.length()) break;
         }
         sequenceLengths[motorIdx] = stepIndex;
     }
