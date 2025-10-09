@@ -1,84 +1,101 @@
 import React, { useState } from "react";
+import { Button } from "@/components/ui/button";
 
-let bleDevice: BluetoothDevice | null = null;
-let bleCharacteristic: BluetoothRemoteGATTCharacteristic | null = null;
+export default function MotorControl() {
+  const [motors, setMotors] = useState([
+    { steps: 100, rpm: 1000, dir: 1 },
+    { steps: 0, rpm: 0, dir: 0 },
+    { steps: 0, rpm: 0, dir: 0 },
+    { steps: 0, rpm: 0, dir: 0 },
+  ]);
 
-export default function App() {
-  const [connected, setConnected] = useState(false);
-  const [data, setData] = useState("100,1000,1;0,0,0;0,0,0;0,0,0");
+  const [port, setPort] = useState<any>(null);
+  const [monitor, setMonitor] = useState<string>("System ready.\n");
 
-  async function connectBluetooth() {
-    try {
-      bleDevice = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: "HC" }],
-        optionalServices: [0xFFE0],
-      });
-      const server = await bleDevice.gatt!.connect();
-      const service = await server.getPrimaryService(0xFFE0);
-      bleCharacteristic = await service.getCharacteristic(0xFFE1);
-      setConnected(true);
-      alert("Connected to BLE!");
-    } catch (error) {
-      alert("Connection failed: " + error);
-    }
+  async function connect() {
+    const p = await (navigator as any).serial.requestPort();
+    await p.open({ baudRate: 9600 });
+    setPort(p);
+    setMonitor((m) => m + "✅ Connected.\n");
   }
 
-  function handleSend() {
-    if (!bleCharacteristic) {
-      alert("Not connected!");
-      return;
-    }
-    const msg = data.trim() + "\n";
-    bleCharacteristic.writeValue(new TextEncoder().encode(msg));
-    console.log("Sent:", msg);
-    alert("Data sent!");
+  async function sendCommand(cmd: string) {
+    if (!port) return alert("Chưa kết nối!");
+
+    const writer = port.writable.getWriter();
+    await writer.write(new TextEncoder().encode(cmd + "\n"));
+    writer.releaseLock();
+
+    setMonitor((m) => m + "➡️ Sent: " + cmd + "\n");
   }
 
-  function handleStart() {
-    if (!bleCharacteristic) {
-      alert("Not connected!");
-      return;
-    }
-    bleCharacteristic.writeValue(new TextEncoder().encode("START\n"));
-    console.log("Sent: START");
-  }
-
-  function handlePause() {
-    if (!bleCharacteristic) {
-      alert("Not connected!");
-      return;
-    }
-    bleCharacteristic.writeValue(new TextEncoder().encode("PAUSE\n"));
-    console.log("Sent: PAUSE");
+  function formatCommand() {
+    return motors.map((m) => `${m.steps},${m.rpm},${m.dir},0`).join(";") + ";";
   }
 
   return (
-    <div style={{ fontFamily: "sans-serif", padding: 20 }}>
-      <h2>🎨 String Art Controller</h2>
-      <p>Status: {connected ? "🟢 Connected" : "🔴 Disconnected"}</p>
+    <div className="p-4 space-y-3">
+      <h1 className="text-xl font-bold">🧠 Motor Controller</h1>
 
-      <button onClick={connectBluetooth}>🔗 Connect</button>
+      <Button onClick={connect}>Kết nối</Button>
+      <Button onClick={() => sendCommand(formatCommand())}>Gửi dữ liệu</Button>
+      <Button onClick={() => sendCommand("START")}>Start</Button>
+      <Button onClick={() => sendCommand("STOP")}>Stop</Button>
 
-      <div style={{ marginTop: 10 }}>
-        <textarea
-          rows={3}
-          style={{ width: "100%" }}
-          value={data}
-          onChange={(e) => setData(e.target.value)}
-        />
+      <div className="grid grid-cols-4 gap-2 mt-3">
+        {motors.map((m, i) => (
+          <div key={i} className="p-2 border rounded-lg">
+            <h2 className="font-semibold">Motor {i + 1}</h2>
+            <label>Steps</label>
+            <input
+              type="number"
+              value={m.steps}
+              onChange={(e) =>
+                setMotors(
+                  motors.map((x, idx) =>
+                    idx === i ? { ...x, steps: +e.target.value } : x
+                  )
+                )
+              }
+              className="w-full border p-1 rounded"
+            />
+            <label>RPM</label>
+            <input
+              type="number"
+              value={m.rpm}
+              onChange={(e) =>
+                setMotors(
+                  motors.map((x, idx) =>
+                    idx === i ? { ...x, rpm: +e.target.value } : x
+                  )
+                )
+              }
+              className="w-full border p-1 rounded"
+            />
+            <label>Dir</label>
+            <select
+              value={m.dir}
+              onChange={(e) =>
+                setMotors(
+                  motors.map((x, idx) =>
+                    idx === i ? { ...x, dir: +e.target.value } : x
+                  )
+                )
+              }
+              className="w-full border p-1 rounded"
+            >
+              <option value={1}>Forward</option>
+              <option value={0}>Reverse</option>
+            </select>
+          </div>
+        ))}
       </div>
 
-      <div style={{ marginTop: 10 }}>
-        <button onClick={handleSend}>📤 Send Data</button>
-        <button onClick={handleStart}>▶️ Start</button>
-        <button onClick={handlePause}>⏸ Pause</button>
+      <div className="mt-4 p-2 bg-black text-green-400 font-mono h-48 overflow-y-scroll">
+        {monitor.split("\n").map((line, i) => (
+          <div key={i}>{line}</div>
+        ))}
       </div>
-
-      <p style={{ marginTop: 20 }}>
-        💡 Chuỗi ví dụ:  
-        <br />
-        <code>100,1000,1;50,800,0;10,500,1;5,300,0</code>
-      </p>
     </div>
   );
 }
