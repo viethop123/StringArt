@@ -1,28 +1,12 @@
-const CACHE_NAME = 'stringart-cache-v8'; // A fresh, final start
+const CACHE_NAME = 'stringart-cache-v1';
 const urlsToCache = [
   './',
   './index.html',
   './index.css',
-  './index.js'
+  './index.tsx'
 ];
 
-self.addEventListener('activate', event => {
-  const cacheWhitelist = [CACHE_NAME];
-  event.waitUntil(
-    caches.keys().then(cacheNames => {
-      return Promise.all(
-        cacheNames.map(cacheName => {
-          if (cacheWhitelist.indexOf(cacheName) === -1) {
-            return caches.delete(cacheName);
-          }
-        })
-      );
-    })
-  );
-});
-
 self.addEventListener('install', event => {
-  self.skipWaiting(); 
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then(cache => {
@@ -34,7 +18,14 @@ self.addEventListener('install', event => {
 
 self.addEventListener('fetch', event => {
   event.respondWith(
-    // Always try the network first, fall back to cache
-    fetch(event.request).catch(() => caches.match(event.request))
+    caches.match(event.request)
+      .then(response => {
+        // Cache hit - return response
+        if (response) {
+          return response;
+        }
+        return fetch(event.request);
+      }
+    )
   );
 });
