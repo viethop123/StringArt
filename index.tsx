@@ -194,15 +194,31 @@ function App() {
         }
     }
     
-    async function sendBleCommand(command: string) {
+    async function sendDataInChunks(command: string) {
         if (!uartCharacteristic) {
             setNotification('Không có kết nối Bluetooth', true);
             return;
         }
         try {
             const encoder = new TextEncoder();
-            await uartCharacteristic.writeValue(encoder.encode(command + '\n'));
-            setNotification(`Lệnh ${command} đã được gửi`);
+            const encoded = encoder.encode(command + '\n');
+            const CHUNK_SIZE = 20; // Standard for BLE modules like HM-10
+
+            setNotification(`Đang gửi ${encoded.length} bytes...`);
+
+            for (let i = 0; i < encoded.length; i += CHUNK_SIZE) {
+                const chunk = encoded.slice(i, i + CHUNK_SIZE);
+                await uartCharacteristic.writeValue(chunk);
+                // A small delay is crucial for some BLE modules to process each chunk
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            
+            if (command === 'START' || command === 'PAUSE') {
+                setNotification(`Lệnh ${command} đã được gửi`);
+            } else {
+                setNotification('Đã gửi dữ liệu Thành Công');
+            }
+
         } catch (error) {
             console.error(`Lỗi gửi lệnh ${command}:`, error);
             setNotification(`Gửi lệnh ${command} Thất Bại`, true);
@@ -210,31 +226,18 @@ function App() {
     }
 
     async function handleSend() {
-        if (!uartCharacteristic) {
-            setNotification('Không có kết nối Bluetooth để gửi', true);
-            return;
+        const motorData: string[] = [];
+        for (let i = 1; i <= 4; i++) {
+            const vStr = (document.getElementById(`m${i}-v`) as HTMLInputElement).value.trim();
+            const vpStr = (document.getElementById(`m${i}-vp`) as HTMLInputElement).value.trim();
+            const dirStr = (document.getElementById(`m${i}-dir`) as HTMLInputElement).value.trim();
+            
+            const motorCommand = `${vStr || '0'},${vpStr || '0'},${dirStr || '0'}`;
+            motorData.push(motorCommand);
         }
-    
-        try {
-            const motorData: string[] = [];
-            for (let i = 1; i <= 4; i++) {
-                const vStr = (document.getElementById(`m${i}-v`) as HTMLInputElement).value.trim();
-                const vpStr = (document.getElementById(`m${i}-vp`) as HTMLInputElement).value.trim();
-                const dirStr = (document.getElementById(`m${i}-dir`) as HTMLInputElement).value.trim();
-                
-                const motorCommand = `${vStr || '0'},${vpStr || '0'},${dirStr || '0'}`;
-                motorData.push(motorCommand);
-            }
-            const dataString = motorData.join(';');
-    
-            const encoder = new TextEncoder();
-            await uartCharacteristic.writeValue(encoder.encode(dataString + '\n'));
-            setNotification('Đã gửi dữ liệu Thành Công');
-    
-        } catch (error) {
-            console.error('Lỗi gửi dữ liệu:', error);
-            setNotification('Gửi dữ liệu Thất Bại', true);
-        }
+        const dataString = motorData.join(';');
+        
+        await sendDataInChunks(dataString);
     }
 
     function handleClear() {
@@ -355,7 +358,9 @@ void loop() {
       char c = bleSerial.read();
       if (c == '\\n') {
         command.trim();
-        parseCommand(command);
+        if (command.length() > 0) { // Chỉ xử lý nếu lệnh không rỗng
+           parseCommand(command);
+        }
         command = "";
         break;
       } else {
@@ -414,6 +419,12 @@ void parseCommand(String command) {
     Serial.println("Execution paused.");
     bleSerial.println("Execution paused.");
   } else {
+    // Bộ lọc: Bỏ qua chuỗi không hợp lệ trước khi phân tích
+    if (command.length() < 5 || command.indexOf(',') == -1) {
+      Serial.println("Invalid or garbage data ignored: " + command);
+      bleSerial.println("ERROR: Invalid Data");
+      return;
+    }
     parseDataString(command);
   }
 }
@@ -551,8 +562,8 @@ bool parseSingleStep(String stepData, int motorIndex, int stepIndex) {
     });
 
     sendButton.addEventListener('click', handleSend);
-    startButton.addEventListener('click', () => sendBleCommand('START'));
-    pauseButton.addEventListener('click', () => sendBleCommand('PAUSE'));
+    startButton.addEventListener('click', () => sendDataInChunks('START'));
+    pauseButton.addEventListener('click', () => sendDataInChunks('PAUSE'));
     clearButton.addEventListener('click', handleClear);
 
     return appContainer;
