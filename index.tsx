@@ -26,13 +26,6 @@ function App() {
     header.appendChild(title);
     appContainer.appendChild(header);
 
-    // --- Input Filter ---
-    function handleInput(event: Event) {
-        const input = event.target as HTMLInputElement;
-        // Allow only numbers and '/'
-        input.value = input.value.replace(/[^0-9/]/g, '');
-    }
-
     // Machine Sections
     const mainContent = document.createElement('main');
     for (let i = 1; i <= 4; i++) {
@@ -49,9 +42,9 @@ function App() {
         inputContainer.className = 'input-container';
 
         const inputs = [
-            { id: 'v', label: 'V (Vòng)', placeholder: '100/40/30' },
-            { id: 'vp', label: 'V/P (Vòng/phút)', placeholder: '20/25/40' },
-            { id: 'dir', label: 'Chiều (1/0)', placeholder: '1/1/0' }
+            { id: 'v', label: 'V (Vòng)', placeholder: '100' },
+            { id: 'vp', label: 'V/P (Vòng/phút)', placeholder: '60' },
+            { id: 'dir', label: 'Chiều (1/0)', placeholder: '1' }
         ];
 
         inputs.forEach(inputInfo => {
@@ -63,11 +56,10 @@ function App() {
             label.textContent = inputInfo.label;
 
             const input = document.createElement('input');
-            input.type = 'text'; // Changed to text to allow '/'
+            input.type = 'number'; 
             input.id = `m${i}-${inputInfo.id}`;
             input.name = `m${i}-${inputInfo.id}`;
             input.placeholder = inputInfo.placeholder;
-            input.addEventListener('input', handleInput); // Add filter
             
             inputGroup.appendChild(label);
             inputGroup.appendChild(input);
@@ -229,29 +221,9 @@ function App() {
                 const vStr = (document.getElementById(`m${i}-v`) as HTMLInputElement).value.trim();
                 const vpStr = (document.getElementById(`m${i}-vp`) as HTMLInputElement).value.trim();
                 const dirStr = (document.getElementById(`m${i}-dir`) as HTMLInputElement).value.trim();
-    
-                if (!vStr && !vpStr && !dirStr) {
-                    motorData.push('0,0,0'); // Default for empty motor
-                    continue;
-                }
-    
-                const vArr = (vStr || '0').split('/').map(s => s.trim());
-                const vpArr = (vpStr || '0').split('/').map(s => s.trim());
-                const dirArr = (dirStr || '0').split('/').map(s => s.trim());
-    
-                if (vArr.length !== vpArr.length || vArr.length !== dirArr.length) {
-                    setNotification(`Lỗi dữ liệu M${i}: Số lượng giá trị không khớp.`, true);
-                    return;
-                }
-    
-                const sequenceParts: string[] = [];
-                for (let j = 0; j < vArr.length; j++) {
-                    const v = vArr[j] || '0';
-                    const vp = vpArr[j] || '0';
-                    const dir = dirArr[j] || '0';
-                    sequenceParts.push(`${v},${vp},${dir}`);
-                }
-                motorData.push(sequenceParts.join('|'));
+                
+                const motorCommand = `${vStr || '0'},${vpStr || '0'},${dirStr || '0'}`;
+                motorData.push(motorCommand);
             }
             const dataString = motorData.join(';');
     
@@ -331,22 +303,27 @@ function App() {
 
 #define MotorInterfaceType 1
 
+// Khai báo các đối tượng động cơ
 AccelStepper stepper1(MotorInterfaceType, 2, 3);
 AccelStepper stepper2(MotorInterfaceType, 4, 5);
 AccelStepper stepper3(MotorInterfaceType, 6, 7);
 AccelStepper stepper4(MotorInterfaceType, 8, 9);
 AccelStepper* steppers[] = {&stepper1, &stepper2, &stepper3, &stepper4};
 
+// Khai báo cổng Serial cho Bluetooth
 SoftwareSerial bleSerial(10, 11); // RX, TX
 
-const long STEPS_PER_REV = 3200;
-const int MAX_SEQUENCE_STEPS = 10;
+// Hằng số cài đặt
+const long STEPS_PER_REV = 3200; // Số bước trên 1 vòng (tuỳ chỉnh theo driver)
+const int MAX_SEQUENCE_STEPS = 1; // Giờ chỉ cần 1 bước cho mỗi motor
 
+// Cấu trúc để lưu thông tin một bước chạy
 struct MotorStep {
   long steps;
   float speed;
 };
 
+// Mảng lưu trữ bước chạy cho từng motor
 MotorStep motorSequences[4][MAX_SEQUENCE_STEPS];
 int sequenceLengths[4] = {0};
 int currentStepIndex[4] = {0};
@@ -357,76 +334,69 @@ void setup() {
   bleSerial.begin(9600); 
 
   for (int i=0; i<4; i++) {
-    steppers[i]->setMaxSpeed(8000.0); // Set a high initial max speed
-    steppers[i]->setAcceleration(1000.0); // Set a moderate acceleration
+    steppers[i]->setMaxSpeed(8000.0);
+    steppers[i]->setAcceleration(2000.0);
   }
 }
 
 void loop() {
-  // Use a more robust method to read from BLE to handle long data strings
-  // that might overflow the default 64-byte SoftwareSerial buffer.
+  // Đọc lệnh từ Bluetooth
   if (bleSerial.available()) {
-    static String command = ""; // Use static to persist data across loop iterations
+    static String command = "";
     while (bleSerial.available()) {
       char c = bleSerial.read();
       if (c == '\\n') {
         command.trim();
         parseCommand(command);
-        command = ""; // Reset for the next command
-        break;        // Exit the inner while loop
+        command = "";
+        break;
       } else {
         command += c;
       }
     }
   }
 
-  // If the machine is running, execute motor steps
+  // Nếu đang chạy, thực thi lệnh
   if (isRunning) {
-    // These run() calls must be made as frequently as possible
     steppers[0]->run();
     steppers[1]->run();
     steppers[2]->run();
     steppers[3]->run();
 
-    // After running, check if any motor has finished its move
-    // and needs the next sequence step loaded.
     for (int i=0; i<4; i++) {
       checkAndLoadNextStep(steppers[i], i);
     }
-
-    // Check if all motors have completed all their sequences
-    bool allSequencesDone = true;
+    
+    bool allMotorsFinished = true;
     for (int i = 0; i < 4; i++) {
-      // A motor's sequence is not done if it's still moving OR 
-      // if it has stopped but still has more steps in its sequence list.
-      if (steppers[i]->distanceToGo() != 0 || currentStepIndex[i] < sequenceLengths[i]) {
-        allSequencesDone = false;
+      if (steppers[i]->distanceToGo() != 0) {
+        allMotorsFinished = false;
         break;
       }
     }
 
-    if (allSequencesDone) {
+    if (allMotorsFinished) {
       isRunning = false;
-      Serial.println("All sequences complete.");
-      bleSerial.println("All sequences complete."); // Notify app
+      Serial.println("All motors finished.");
+      bleSerial.println("All motors finished.");
     }
   }
 }
 
+// Kiểm tra và nạp bước chạy tiếp theo (nếu có)
 void checkAndLoadNextStep(AccelStepper* stepper, int motorIndex) {
-    // If the motor is not busy (has reached its target) and there are more steps in its sequence...
     if (stepper->distanceToGo() == 0) {
         if (currentStepIndex[motorIndex] < sequenceLengths[motorIndex]) {
             MotorStep next = motorSequences[motorIndex][currentStepIndex[motorIndex]];
-            // Per user feedback: use abs() for speed and set acceleration for each move.
             stepper->setMaxSpeed(abs(next.speed)); 
-            stepper->setAcceleration(1000.0);
+            stepper->setAcceleration(2000.0);
             stepper->moveTo(stepper->currentPosition() + next.steps);
             currentStepIndex[motorIndex]++;
         }
     }
 }
 
+// Phân tích lệnh chính (START, PAUSE hoặc dữ liệu)
 void parseCommand(String command) {
   Serial.println("Received: " + command);
   if (command.equalsIgnoreCase("START")) {
@@ -436,23 +406,21 @@ void parseCommand(String command) {
     Serial.println("Execution paused.");
     bleSerial.println("Execution paused.");
   } else {
-    // Any other string is assumed to be motor data
     parseDataString(command);
   }
 }
 
+// Bắt đầu chu trình chạy
 void startMotors() {
     bool hasData = false;
     for(int i=0; i<4; i++) if (sequenceLengths[i] > 0) hasData = true;
 
     if (hasData) {
-        // Reset positions and sequence indices for all motors
         for(int i=0; i<4; i++) {
             currentStepIndex[i] = 0;
             steppers[i]->setCurrentPosition(0);
         }
 
-        // Load the first step for all motors that have a sequence
         for(int i=0; i<4; i++) {
             checkAndLoadNextStep(steppers[i], i);
         }
@@ -466,76 +434,64 @@ void startMotors() {
     }
 }
 
+// Phân tích chuỗi dữ liệu cho các motor
+// Định dạng: V1,VP1,D1;V2,VP2,D2;V3,VP3,D3;V4,VP4,D4
 void parseDataString(String data) {
-  // Stop any current execution when new data is received
   isRunning = false; 
   for(int i=0; i<4; i++) {
-    sequenceLengths[i] = 0; // Clear old sequences
-    steppers[i]->stop(); // Immediately stop the motor
+    sequenceLengths[i] = 0;
+    steppers[i]->stop();
   }
 
   int motorIndex = 0;
   int lastDelim = -1;
-  // Parse M1;M2;M3;
+  
   for (int i = 0; i < data.length() && motorIndex < 4; i++) {
     if (data.charAt(i) == ';') {
       String motorPart = data.substring(lastDelim + 1, i);
-      parseMotorSequence(motorPart, motorIndex);
+      if (parseSingleStep(motorPart, motorIndex, 0)) {
+        sequenceLengths[motorIndex] = 1;
+      }
       lastDelim = i;
       motorIndex++;
     }
   }
-  // Parse M4 (the last part without a trailing ';')
+  
   String lastMotorPart = data.substring(lastDelim + 1);
   if (lastMotorPart.length() > 0 && motorIndex < 4) {
-      parseMotorSequence(lastMotorPart, motorIndex);
+      if (parseSingleStep(lastMotorPart, motorIndex, 0)) {
+          sequenceLengths[motorIndex] = 1;
+      }
   }
   
   Serial.println("Data parsed and stored.");
   bleSerial.println("Data parsed and stored.");
 }
 
-void parseMotorSequence(String sequence, int motorIndex) {
-  int stepIndex = 0;
-  int lastPipe = -1;
-  // Parse V1,VP1,D1|V2,VP2,D2
-  for (int i = 0; i < sequence.length() && stepIndex < MAX_SEQUENCE_STEPS; i++) {
-    if (sequence.charAt(i) == '|') {
-      String stepPart = sequence.substring(lastPipe + 1, i);
-      parseSingleStep(stepPart, motorIndex, stepIndex);
-      lastPipe = i;
-      stepIndex++;
-    }
-  }
-  // Parse the last step part
-  String lastStepPart = sequence.substring(lastPipe + 1);
-  if (lastStepPart.length() > 0 && stepIndex < MAX_SEQUENCE_STEPS) {
-      parseSingleStep(lastStepPart, motorIndex, stepIndex);
-      stepIndex++;
-  }
-  sequenceLengths[motorIndex] = stepIndex;
-}
-
-void parseSingleStep(String stepData, int motorIndex, int stepIndex) {
+// Phân tích dữ liệu cho một motor duy nhất
+bool parseSingleStep(String stepData, int motorIndex, int stepIndex) {
   int firstComma = stepData.indexOf(',');
   int secondComma = stepData.lastIndexOf(',');
 
-  if (firstComma == -1 || secondComma == -1 || firstComma == secondComma) return;
+  if (firstComma == -1 || secondComma == -1 || firstComma == secondComma) return false;
 
   float revolutions = stepData.substring(0, firstComma).toFloat();
   float rpm = stepData.substring(firstComma + 1, secondComma).toFloat();
   int direction = stepData.substring(secondComma + 1).toInt();
 
+  if (revolutions == 0 && rpm == 0) {
+      sequenceLengths[motorIndex] = 0;
+      return false;
+  }
+
   MotorStep current;
-  // Calculate total steps. Direction is applied here. AccelStepper handles direction
-  // based on whether the target position is > or < the current position.
   current.steps = revolutions * STEPS_PER_REV * (direction == 1 ? 1 : -1);
-  
-  // Calculate speed in steps/sec. This MUST be a positive value for setMaxSpeed.
   current.speed = (rpm * STEPS_PER_REV / 60.0);
   
   motorSequences[motorIndex][stepIndex] = current;
-}`;
+  return true;
+}
+`;
 
         modalBody.innerHTML = instructionsHTML;
 
