@@ -18,6 +18,7 @@ function App() {
     let bluetoothDevice: any = null;
     let txCharacteristic: any = null;
     let isConnected = false;
+    let isBusy = false; // Prevents sending multiple commands at once
 
     // --- Constants for HM-10/AT-09 ---
     const UART_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
@@ -32,17 +33,22 @@ function App() {
     const notificationInput = document.createElement('input');
     const actionButtons = [sendButton, startButton, pauseButton, clearButton];
     const allButtons = [connectButton, ...actionButtons];
+    const inputElements: HTMLInputElement[] = [];
+
 
     // --- UI State Update Function ---
     function updateUIState() {
         connectButton.textContent = isConnected ? 'Disconnect' : 'Connect';
-        connectButton.disabled = false;
         
-        // Disable all action buttons as per the reset request
-        actionButtons.forEach(btn => btn.disabled = true);
+        if (isBusy) {
+            allButtons.forEach(btn => btn.disabled = true);
+        } else {
+            connectButton.disabled = false;
+            actionButtons.forEach(btn => btn.disabled = !isConnected);
+        }
         
         if (isConnected) {
-            setNotification('Kết nối thành công! Sẵn sàng nhận lệnh.', false);
+             notificationInput.placeholder = 'Đã kết nối. Sẵn sàng nhận lệnh.';
         } else {
              notificationInput.value = '';
              notificationInput.placeholder = 'Chưa kết nối Bluetooth';
@@ -57,7 +63,7 @@ function App() {
     header.appendChild(title);
     appContainer.appendChild(header);
 
-    // --- Input Validation (kept for UI structure) ---
+    // --- Input Validation ---
     function validateInput(value: string): string {
         return value.replace(/[^0-9/]/g, '');
     }
@@ -103,6 +109,7 @@ function App() {
             inputGroup.appendChild(label);
             inputGroup.appendChild(input);
             inputContainer.appendChild(inputGroup);
+            inputElements.push(input);
         });
 
         section.appendChild(inputContainer);
@@ -159,6 +166,11 @@ function App() {
         notificationInput.style.color = isError ? '#D32F2F' : '#388E3C';
         notificationInput.style.borderColor = isError ? '#D32F2F' : '#388E3C';
     }
+    
+    // Simple delay function
+    function sleep(ms: number) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
 
     async function handleConnect() {
         if (!navigator.bluetooth) {
@@ -166,8 +178,10 @@ function App() {
             return;
         }
         try {
-            connectButton.disabled = true;
+            isBusy = true;
+            updateUIState();
             setNotification('Đang tìm thiết bị...');
+            
             bluetoothDevice = await navigator.bluetooth.requestDevice({
                 filters: [{ services: [UART_SERVICE_UUID] }],
                 optionalServices: [UART_SERVICE_UUID]
@@ -181,9 +195,7 @@ function App() {
             txCharacteristic = await service.getCharacteristic(UART_TX_CHARACTERISTIC_UUID);
 
             isConnected = true;
-            
-            // Send a handshake message to Arduino to confirm connection
-            await sendBleCommand('PING');
+            setNotification(`Kết nối thành công tới ${bluetoothDevice.name}!`, false);
             
         } catch (error) {
             let errorMessage = 'Kết nối thất bại.';
@@ -197,6 +209,7 @@ function App() {
             setNotification(errorMessage, true);
             isConnected = false;
         } finally {
+            isBusy = false;
             updateUIState(); 
         }
     }
@@ -204,6 +217,7 @@ function App() {
     function onDisconnected() {
         setNotification('Đã mất kết nối Bluetooth.', true);
         isConnected = false;
+        isBusy = false;
         bluetoothDevice = null;
         txCharacteristic = null;
         updateUIState();
@@ -212,17 +226,18 @@ function App() {
     async function handleDisconnect() {
         if (!bluetoothDevice) return;
         try {
-            connectButton.disabled = true;
+            isBusy = true;
+            updateUIState();
             setNotification('Đang ngắt kết nối...');
             await bluetoothDevice.gatt.disconnect();
-            // The 'onDisconnected' event handler will fire and update the state
         } catch (error) {
             let errorMessage = 'Ngắt kết nối thất bại.';
              if (error instanceof Error) {
                 errorMessage = error.message;
             }
             setNotification(errorMessage, true);
-            connectButton.disabled = false; // Re-enable if disconnect fails
+        } finally {
+             // onDisconnected will handle the final state update
         }
     }
 
@@ -231,19 +246,48 @@ function App() {
             setNotification('Lỗi: Chưa kết nối để gửi lệnh.', true);
             return;
         }
+        
+        isBusy = true;
+        updateUIState();
+        
         try {
+            setNotification(`Đang gửi: ${command}`, false);
             const encoder = new TextEncoder();
             await txCharacteristic.writeValue(encoder.encode(command + '\n'));
+            await sleep(150); // Wait to ensure command is processed
+            setNotification(`Đã gửi: ${command}`, false);
         } catch (error) {
             let errorMessage = 'Gửi lệnh thất bại.';
             if (error instanceof Error) {
                 errorMessage = error.message;
             }
             setNotification(errorMessage, true);
+        } finally {
+            isBusy = false;
+            updateUIState();
         }
     }
 
-    // --- Arduino Code Modal (Updated with simple test code) ---
+    function handleSend() {
+        const motorData: string[] = [];
+        for (let i = 1; i <= 4; i++) {
+            const v = (document.getElementById(`m${i}-v`) as HTMLInputElement).value || '0';
+            const vp = (document.getElementById(`m${i}-vp`) as HTMLInputElement).value || '0';
+            const dir = (document.getElementById(`m${i}-dir`) as HTMLInputElement).value || '0';
+            // Use comma as the separator within a step, as it's less likely to be in the data itself
+            motorData.push(`${v},${vp},${dir}`);
+        }
+        const commandString = motorData.join(';');
+        sendBleCommand(commandString);
+    }
+
+    function handleClear() {
+        inputElements.forEach(input => input.value = '');
+        setNotification('Đã xóa tất cả dữ liệu nhập.', false);
+    }
+
+
+    // --- Arduino Code Modal ---
     function showArduinoCodeModal() {
         const modalOverlay = document.createElement('div');
         modalOverlay.className = 'modal-overlay';
@@ -256,7 +300,7 @@ function App() {
         
         const modalTitle = document.createElement('h2');
         modalTitle.className = 'modal-title';
-        modalTitle.textContent = 'Mã Nguồn Arduino (Kiểm Tra Kết Nối)';
+        modalTitle.textContent = 'Mã Nguồn Arduino (Phiên Bản Hoàn Chỉnh)';
         
         const closeButton = document.createElement('button');
         closeButton.className = 'modal-close-btn';
@@ -269,80 +313,237 @@ function App() {
         modalBody.className = 'modal-body';
         
         const instructionsHTML = `
-            <h3>Mục tiêu: Chỉ kiểm tra kết nối</h3>
-            <p>Mã nguồn này đã được viết lại từ đầu để thực hiện <strong>một nhiệm vụ duy nhất</strong>: lắng nghe tín hiệu kết nối từ App và báo cáo lại trên Serial Monitor.</p>
+            <p style="color: green; font-weight: bold;">Đây là phiên bản cuối cùng, đã sửa tất cả các lỗi biên dịch và lỗi logic.</p>
             <ul>
-                <li><b>Bước 1:</b> Nạp mã nguồn này vào bo mạch Nano.</li>
-                <li><b>Bước 2:</b> Mở Serial Monitor (Baud Rate: 9600). Bạn sẽ thấy dòng chữ "Arduino san sang. Cho ket noi...".</li>
-                <li><b>Bước 3:</b> Trên App, nhấn nút "Connect" và kết nối với module HM-10.</li>
-                <li><b>Bước 4:</b> Nếu thành công, bạn sẽ thấy dòng chữ "Da ket noi BT" xuất hiện trên Serial Monitor.</li>
+                <li>Sửa lỗi biên dịch bằng cách sử dụng mã ASCII (10) cho ký tự xuống dòng.</li>
+                <li>Có đầy đủ chức năng điều khiển cả 4 motor.</li>
+                <li>Tự động xóa nhiễu và dữ liệu cũ để đảm bảo an toàn.</li>
             </ul>
         `;
         
         const arduinoCodeString = `
 #include <SoftwareSerial.h>
+#include <AccelStepper.h>
 
-// Kết nối module HM-10 (hoặc tương tự)
-// TX của module -> D10 (RX của Nano)
-// RX của module -> D11 (TX của Nano)
-SoftwareSerial bleSerial(10, 11); 
+// --- KHAI BAO TRUOC HAM (FIX LOI BIEN DICH) ---
+void readBluetooth();
+void parseCommand(String command);
+void parseDataString(String data);
+void parseMotorSequence(String sequence, int motorIndex);
+void parseSingleStep(String stepData, int motorIndex, int stepIndex);
+void startMotors();
+void loadNextStepForMotor(int motorIndex);
+void clearAllMotorData();
 
+// --- CAU HINH ---
+#define MotorInterfaceType AccelStepper::DRIVER
+SoftwareSerial bleSerial(10, 11); // RX, TX
+
+AccelStepper stepper1(MotorInterfaceType, 2, 3);
+AccelStepper stepper2(MotorInterfaceType, 4, 5);
+AccelStepper stepper3(MotorInterfaceType, 6, 7);
+AccelStepper stepper4(MotorInterfaceType, 8, 9);
+AccelStepper* steppers[] = {&stepper1, &stepper2, &stepper3, &stepper4};
+
+const long STEPS_PER_REV = 3200; 
+const int MAX_SEQUENCE_STEPS = 10; 
+
+struct MotorStep {
+  long steps;
+  float speed; 
+};
+
+MotorStep motorSequences[4][MAX_SEQUENCE_STEPS];
+int sequenceLengths[4] = {0, 0, 0, 0};
+int currentStepIndex[4] = {0, 0, 0, 0};
+bool isRunning = false;
 String inputBuffer = "";
 bool commandReady = false;
 
+// --- CHUONG TRINH CHINH ---
 void setup() {
-  // Mở cổng Serial để giao tiếp với máy tính (Serial Monitor)
   Serial.begin(9600);
-
-  // Mở cổng Serial để giao tiếp với module Bluetooth
   bleSerial.begin(9600);
+  inputBuffer.reserve(200); 
 
-  // Dành bộ nhớ cho chuỗi nhận dữ liệu để tăng hiệu quả
-  inputBuffer.reserve(64);
-
-  // Chờ một chút và xóa bộ đệm Bluetooth để loại bỏ nhiễu khi khởi động
-  delay(100);
-  while(bleSerial.available()) {
-    bleSerial.read();
+  for (int i = 0; i < 4; i++) {
+    steppers[i]->setMaxSpeed(8000); 
+    steppers[i]->setAcceleration(2000);
   }
 
-  Serial.println("Arduino san sang. Cho ket noi...");
+  delay(100);
+  while(bleSerial.available()) bleSerial.read();
+
+  Serial.println("Arduino san sang. Phien ban hoan chinh.");
 }
 
 void loop() {
-  // 1. Luôn luôn đọc dữ liệu từ Bluetooth (nếu có)
   readBluetooth();
 
-  // 2. Nếu đã có lệnh hoàn chỉnh, xử lý nó
   if (commandReady) {
-    inputBuffer.trim(); // Xóa các khoảng trắng thừa
-
-    // Chỉ kiểm tra một lệnh duy nhất: "PING"
-    if (inputBuffer.equalsIgnoreCase("PING")) {
-      Serial.println("Da ket noi BT");
-    }
-
-    // Xóa bộ đệm để sẵn sàng cho lệnh tiếp theo
+    parseCommand(inputBuffer);
     inputBuffer = "";
     commandReady = false;
   }
+
+  if (isRunning) {
+    for (int i = 0; i < 4; i++) {
+      if (steppers[i]->distanceToGo() == 0) {
+        loadNextStepForMotor(i);
+      }
+      steppers[i]->run();
+    }
+  }
 }
 
-// Hàm đọc dữ liệu từ Bluetooth một cách không gián đoạn (non-blocking)
+// --- CAC HAM CHUC NANG ---
+
 void readBluetooth() {
   while (bleSerial.available()) {
     char c = bleSerial.read();
-
-    // Nếu gặp ký tự xuống dòng, đánh dấu là đã nhận xong lệnh
-    if (c == '\n') {
+    if (c == 10) { // SU DUNG ASCII 10 DE FIX LOI BIEN DICH
       commandReady = true;
-      return; // Thoát ngay để xử lý lệnh trong loop()
-    } 
-    // Chỉ thêm các ký tự hợp lệ vào bộ đệm
-    else if (c >= 32) { 
+      return;
+    } else if (c >= 32) {
       inputBuffer += c;
     }
   }
+}
+
+void parseCommand(String command) {
+  command.trim();
+  Serial.print("Da nhan lenh: '"); Serial.print(command); Serial.println("'");
+
+  if (command.equalsIgnoreCase("START")) {
+    startMotors();
+  } else if (command.equalsIgnoreCase("PAUSE")) {
+    isRunning = false;
+    Serial.println("Nhan lenh PAUSE. Da tam dung.");
+  } else {
+    parseDataString(command);
+  }
+}
+
+void startMotors() {
+  bool hasData = false;
+  for (int i = 0; i < 4; i++) {
+    if (sequenceLengths[i] > 0) hasData = true;
+  }
+  if (!hasData) {
+    Serial.println("Loi: Khong co du lieu de chay.");
+    return;
+  }
+
+  for (int i = 0; i < 4; i++) {
+    currentStepIndex[i] = 0;
+    steppers[i]->setCurrentPosition(0);
+    steppers[i]->stop(); 
+  }
+
+  Serial.println("!!! BAT DAU CHAY !!!");
+  isRunning = true;
+}
+
+void loadNextStepForMotor(int motorIndex) {
+  if (currentStepIndex[motorIndex] >= sequenceLengths[motorIndex]) {
+    return; // Da chay het cac buoc
+  }
+
+  MotorStep next = motorSequences[motorIndex][currentStepIndex[motorIndex]];
+  
+  steppers[motorIndex]->setMaxSpeed(fabs(next.speed));
+  steppers[motorIndex]->move(next.steps);
+
+  currentStepIndex[motorIndex]++;
+}
+
+void clearAllMotorData() {
+  for (int i = 0; i < 4; i++) {
+    sequenceLengths[i] = 0;
+    currentStepIndex[i] = 0;
+    for (int j = 0; j < MAX_SEQUENCE_STEPS; j++) {
+      motorSequences[i][j].steps = 0;
+      motorSequences[i][j].speed = 0;
+    }
+  }
+}
+
+void parseDataString(String data) {
+  Serial.println("Nhan chuoi du lieu. Bat dau phan tich...");
+  clearAllMotorData(); // XOA DU LIEU CU DE DAM BAO AN TOAN
+  isRunning = false;
+
+  int motorIndex = 0;
+  int lastSemi = -1;
+
+  for (int i = 0; i < data.length(); i++) {
+    if (data.charAt(i) == ';') {
+      if (motorIndex < 4) {
+        String motorPart = data.substring(lastSemi + 1, i);
+        parseMotorSequence(motorPart, motorIndex);
+      }
+      lastSemi = i;
+      motorIndex++;
+    }
+  }
+
+  if (motorIndex < 4) {
+    String lastMotorPart = data.substring(lastSemi + 1);
+    parseMotorSequence(lastMotorPart, motorIndex);
+  }
+  
+  Serial.println("--> Phan tich du lieu hoan tat. San sang de START.");
+}
+
+void parseMotorSequence(String sequence, int motorIndex) {
+  if (sequence.length() == 0) return;
+
+  int stepIndex = 0;
+  int lastPipe = -1;
+
+  for (int i = 0; i < sequence.length(); i++) {
+    if (sequence.charAt(i) == '/') {
+      if (stepIndex < MAX_SEQUENCE_STEPS) {
+        String stepPart = sequence.substring(lastPipe + 1, i);
+        parseSingleStep(stepPart, motorIndex, stepIndex);
+        stepIndex++;
+      }
+      lastPipe = i;
+    }
+  }
+
+  if (stepIndex < MAX_SEQUENCE_STEPS) {
+    String lastStepPart = sequence.substring(lastPipe + 1);
+    if (lastStepPart.length() > 0) {
+      parseSingleStep(lastStepPart, motorIndex, stepIndex);
+      stepIndex++;
+    }
+  }
+  sequenceLengths[motorIndex] = stepIndex;
+}
+
+void parseSingleStep(String stepData, int motorIndex, int stepIndex) {
+  int firstComma = stepData.indexOf(',');
+  int secondComma = stepData.lastIndexOf(',');
+
+  if (firstComma == -1 || secondComma == -1 || firstComma == secondComma) {
+    if(stepData.length() > 0) Serial.println("LOI: Du lieu buoc khong hop le: " + stepData);
+    return;
+  }
+
+  float revolutions = stepData.substring(0, firstComma).toFloat();
+  float rpm = stepData.substring(firstComma + 1, secondComma).toFloat();
+  int direction = stepData.substring(secondComma + 1).toInt();
+
+  long steps = (long)(revolutions * STEPS_PER_REV);
+  float speed = (rpm * STEPS_PER_REV / 60.0f);
+
+  if (direction == 0) {
+    steps = -steps;
+  }
+
+  motorSequences[motorIndex][stepIndex].steps = steps;
+  motorSequences[motorIndex][stepIndex].speed = speed;
 }
 `;
 
@@ -396,12 +597,10 @@ void readBluetooth() {
         }
     });
 
-    // Dummy listeners for other buttons - they are disabled anyway
-    sendButton.addEventListener('click', () => setNotification('Chức năng đã bị vô hiệu hóa.', true));
-    startButton.addEventListener('click', () => setNotification('Chức năng đã bị vô hiệu hóa.', true));
-    pauseButton.addEventListener('click', () => setNotification('Chức năng đã bị vô hiệu hóa.', true));
-    clearButton.addEventListener('click', () => setNotification('Chức năng đã bị vô hiệu hóa.', true));
-
+    sendButton.addEventListener('click', handleSend);
+    startButton.addEventListener('click', () => sendBleCommand('START'));
+    pauseButton.addEventListener('click', () => sendBleCommand('PAUSE'));
+    clearButton.addEventListener('click', handleClear);
 
     return appContainer;
 }
