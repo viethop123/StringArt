@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-// Fix for TypeScript error: Property 'bluetooth' does not exist on type 'Navigator'.
+// Fix for TypeScript error on line 121: Property 'bluetooth' does not exist on type 'Navigator'.
+// The Web Bluetooth API is not yet part of the standard TypeScript DOM library definitions.
 declare global {
     interface Navigator {
         bluetooth: any;
@@ -14,55 +15,25 @@ function App() {
     const appContainer = document.createElement('div');
     appContainer.id = 'app-container';
 
-    // --- State Management ---
+    // State variables for Bluetooth connection
     let bluetoothDevice: any = null;
-    let txCharacteristic: any = null;
-    let rxCharacteristic: any = null; // Characteristic to receive data from Arduino
-    let connectionState: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' = 'DISCONNECTED';
+    let uartCharacteristic: any = null;
 
-    // --- Constants for HM-10/AT-09 ---
-    const UART_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
-    const UART_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"; // Used for both TX and RX
-
-    // --- DOM Elements ---
-    const connectButton = document.createElement('button');
-    const sendButton = document.createElement('button');
-    const startButton = document.createElement('button');
-    const pauseButton = document.createElement('button');
-    const clearButton = document.createElement('button');
-    const notificationInput = document.createElement('input');
-    const actionButtons = [sendButton, startButton, pauseButton, clearButton];
-    const inputElements: HTMLInputElement[] = [];
-    
-    // --- UI State Update Function ---
-    function updateUIState() {
-        const isConnected = connectionState === 'CONNECTED';
-        const isConnecting = connectionState === 'CONNECTING';
-
-        connectButton.textContent = isConnected ? 'Disconnect' : 'Connect';
-        connectButton.disabled = isConnecting;
-
-        // All other buttons are disabled unless fully connected
-        actionButtons.forEach(btn => btn.disabled = !isConnected);
-        
-        if (isConnecting) {
-            notificationInput.placeholder = 'Đang xử lý kết nối...';
-        } else if (isConnected) {
-            // The success message is set by the handshake logic
-        } else {
-             notificationInput.value = '';
-             notificationInput.placeholder = 'Chưa kết nối Bluetooth';
-        }
-    }
-    
     // Header
     const header = document.createElement('header');
     const title = document.createElement('h1');
     title.textContent = 'StringArt';
     header.appendChild(title);
     appContainer.appendChild(header);
-    
-    // Machine Sections (UI only)
+
+    // --- Input Filter ---
+    function handleInput(event: Event) {
+        const input = event.target as HTMLInputElement;
+        // Allow only numbers and '/'
+        input.value = input.value.replace(/[^0-9/]/g, '');
+    }
+
+    // Machine Sections
     const mainContent = document.createElement('main');
     for (let i = 1; i <= 4; i++) {
         const section = document.createElement('section');
@@ -80,24 +51,27 @@ function App() {
         const inputs = [
             { id: 'v', label: 'V (Vòng)', placeholder: '100/40/30' },
             { id: 'vp', label: 'V/P (Vòng/phút)', placeholder: '20/25/40' },
-            { id: 'dir', label: 'Chiều (1/0)', placeholder: '1/0/1' }
+            { id: 'dir', label: 'Chiều (1/0)', placeholder: '1/1/0' }
         ];
 
         inputs.forEach(inputInfo => {
             const inputGroup = document.createElement('div');
             inputGroup.className = 'input-group';
+
             const label = document.createElement('label');
             label.setAttribute('for', `m${i}-${inputInfo.id}`);
             label.textContent = inputInfo.label;
+
             const input = document.createElement('input');
-            input.type = 'text';
+            input.type = 'text'; // Changed to text to allow '/'
             input.id = `m${i}-${inputInfo.id}`;
             input.name = `m${i}-${inputInfo.id}`;
             input.placeholder = inputInfo.placeholder;
+            input.addEventListener('input', handleInput); // Add filter
+            
             inputGroup.appendChild(label);
             inputGroup.appendChild(input);
             inputContainer.appendChild(inputGroup);
-            inputElements.push(input);
         });
 
         section.appendChild(inputContainer);
@@ -108,23 +82,33 @@ function App() {
     // Controls
     const controlsContainer = document.createElement('div');
     controlsContainer.className = 'controls';
-    
+    controlsContainer.setAttribute('role', 'group');
+    controlsContainer.setAttribute('aria-label', 'Application Controls');
+
+    const connectButton = document.createElement('button');
     connectButton.textContent = 'Connect';
     connectButton.id = 'connect-btn';
     controlsContainer.appendChild(connectButton);
 
+    const sendButton = document.createElement('button');
     sendButton.textContent = 'Send';
     sendButton.id = 'send-btn';
+    sendButton.disabled = true; // Disabled until connected
     controlsContainer.appendChild(sendButton);
 
+    const startButton = document.createElement('button');
     startButton.textContent = 'Start';
     startButton.id = 'start-btn';
+    startButton.disabled = true; // Disabled until connected
     controlsContainer.appendChild(startButton);
 
+    const pauseButton = document.createElement('button');
     pauseButton.textContent = 'Pause';
     pauseButton.id = 'pause-btn';
+    pauseButton.disabled = true; // Disabled until connected
     controlsContainer.appendChild(pauseButton);
     
+    const clearButton = document.createElement('button');
     clearButton.textContent = 'Clear';
     clearButton.id = 'clear-btn';
     controlsContainer.appendChild(clearButton);
@@ -134,138 +118,160 @@ function App() {
     // Notification Area
     const notificationArea = document.createElement('div');
     notificationArea.className = 'notification-area';
+
+    const notificationInput = document.createElement('input');
     notificationInput.type = 'text';
     notificationInput.id = 'notification-input';
+    notificationInput.name = 'thongbao';
+    notificationInput.placeholder = 'thongbao';
     notificationInput.readOnly = true;
     notificationArea.appendChild(notificationInput);
     appContainer.appendChild(notificationArea);
-    
-    // Set initial UI state
-    updateUIState();
 
-
-    // --- EVENT HANDLERS ---
+    // --- Event Handlers ---
 
     function setNotification(message: string, isError = false) {
         notificationInput.value = message;
         notificationInput.style.color = isError ? '#D32F2F' : '#388E3C';
+        notificationInput.style.borderColor = isError ? '#D32F2F' : '#388E3C';
     }
-    
-    // --- HANDSHAKE LOGIC ---
-    let handshakeResolver: ((value: unknown) => void) | null = null;
-    let handshakeTimeout: number | null = null;
-    
-    function handleRxData(event: any) {
+
+    function handleNotifications(event: any) {
         const value = event.target.value;
-        const decoder = new TextDecoder('utf-8');
-        const receivedString = decoder.decode(value).trim();
-        
-        if (receivedString === 'ACK' && handshakeResolver) {
-            if (handshakeTimeout) clearTimeout(handshakeTimeout);
-            handshakeResolver(true); // Handshake successful
-            handshakeResolver = null;
-        }
+        const decoder = new TextDecoder();
+        const message = decoder.decode(value);
+        console.log(`Received from Arduino: ${message.trim()}`);
+        setNotification(`Arduino: ${message.trim()}`);
     }
 
-    async function performHandshake(): Promise<boolean> {
-        return new Promise(async (resolve, reject) => {
-            handshakeResolver = resolve;
-            
-            // Set a timeout for the handshake
-            handshakeTimeout = window.setTimeout(() => {
-                handshakeResolver = null;
-                reject(new Error('Arduino không phản hồi.'));
-            }, 5000); // 5 seconds timeout
-
-            // Send PING to start the handshake
-            try {
-                setNotification('Đã kết nối, đang gửi PING...');
-                const encoder = new TextEncoder();
-                await txCharacteristic.writeValue(encoder.encode("PING\n"));
-            } catch (error) {
-                if (handshakeTimeout) clearTimeout(handshakeTimeout);
-                reject(error);
-            }
-        });
-    }
-
-    // --- CONNECTION LOGIC ---
     async function handleConnect() {
-        if (!navigator.bluetooth) {
-            setNotification('Lỗi: Web Bluetooth không được hỗ trợ!', true);
-            return;
-        }
+        const UART_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
+        const UART_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"; // Used for both TX and RX
 
-        connectionState = 'CONNECTING';
-        updateUIState();
-        
         try {
-            setNotification('Đang tìm thiết bị...');
+            setNotification('Đang tìm kiếm thiết bị...');
             bluetoothDevice = await navigator.bluetooth.requestDevice({
                 filters: [{ services: [UART_SERVICE_UUID] }],
+                optionalServices: [UART_SERVICE_UUID]
             });
-
-            setNotification(`Đang kết nối tới ${bluetoothDevice.name}...`);
-            bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+            
+            setNotification('Đang kết nối với thiết bị...');
             const server = await bluetoothDevice.gatt.connect();
-            
             const service = await server.getPrimaryService(UART_SERVICE_UUID);
-            const characteristic = await service.getCharacteristic(UART_CHARACTERISTIC_UUID);
-            txCharacteristic = characteristic;
-            rxCharacteristic = characteristic;
+            uartCharacteristic = await service.getCharacteristic(UART_CHARACTERISTIC_UUID);
 
-            // Start listening for data from Arduino
-            await rxCharacteristic.startNotifications();
-            rxCharacteristic.addEventListener('characteristicvaluechanged', handleRxData);
+            await uartCharacteristic.startNotifications();
+            uartCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
 
-            // Perform handshake
-            await performHandshake();
+            sendButton.disabled = false;
+            startButton.disabled = false;
+            pauseButton.disabled = false;
+            connectButton.textContent = 'Disconnect';
+            setNotification('Đã kết nối Bluetooth thành công!');
 
-            // Handshake successful
-            connectionState = 'CONNECTED';
-            setNotification('Kết nối thành công (Đã xác nhận)!', false);
-            updateUIState();
-            
+            bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
         } catch (error) {
-            let errorMessage = 'Kết nối thất bại.';
-            if (error instanceof Error) {
-                errorMessage = error.message;
-            }
-            setNotification(errorMessage, true);
-            if (bluetoothDevice && bluetoothDevice.gatt.connected) {
-                bluetoothDevice.gatt.disconnect();
-            } else {
-                onDisconnected(); // Reset state if connection failed early
-            }
+            console.error('Lỗi kết nối Bluetooth:', error);
+            setNotification('Lỗi kết nối Bluetooth', true);
         }
     }
-    
+
     function onDisconnected() {
-        if(connectionState === 'CONNECTED') {
-             setNotification('Đã mất kết nối Bluetooth.', true);
+        setNotification('Mất kết nối Bluetooth', true);
+        if (uartCharacteristic) {
+            try {
+                uartCharacteristic.removeEventListener('characteristicvaluechanged', handleNotifications);
+            } catch (error) {
+                 console.warn("Could not remove notification listener:", error);
+            }
         }
-        connectionState = 'DISCONNECTED';
+        sendButton.disabled = true;
+        startButton.disabled = true;
+        pauseButton.disabled = true;
+        connectButton.textContent = 'Connect';
         bluetoothDevice = null;
-        txCharacteristic = null;
-        rxCharacteristic = null; // Clear RX characteristic
-        updateUIState();
+        uartCharacteristic = null;
     }
 
     async function handleDisconnect() {
-        if (!bluetoothDevice || !bluetoothDevice.gatt.connected) return;
-        try {
-            setNotification('Đang ngắt kết nối...');
-            // Stop listening before disconnecting
-            if(rxCharacteristic) {
-                await rxCharacteristic.stopNotifications();
-                rxCharacteristic.removeEventListener('characteristicvaluechanged', handleRxData);
-            }
-            await bluetoothDevice.gatt.disconnect();
-            // The 'gattserverdisconnected' event will handle the rest of the cleanup.
-        } catch (error) {
-            setNotification('Ngắt kết nối thất bại.', true);
-            onDisconnected(); // Force reset state
+        if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+            bluetoothDevice.gatt.disconnect();
+        } else {
+           onDisconnected();
         }
+    }
+    
+    async function sendBleCommand(command: string) {
+        if (!uartCharacteristic) {
+            setNotification('Không có kết nối Bluetooth', true);
+            return;
+        }
+        try {
+            const encoder = new TextEncoder();
+            await uartCharacteristic.writeValue(encoder.encode(command + '\n'));
+            setNotification(`Lệnh ${command} đã được gửi`);
+        } catch (error) {
+            console.error(`Lỗi gửi lệnh ${command}:`, error);
+            setNotification(`Gửi lệnh ${command} Thất Bại`, true);
+        }
+    }
+
+    async function handleSend() {
+        if (!uartCharacteristic) {
+            setNotification('Không có kết nối Bluetooth để gửi', true);
+            return;
+        }
+    
+        try {
+            const motorData: string[] = [];
+            for (let i = 1; i <= 4; i++) {
+                const vStr = (document.getElementById(`m${i}-v`) as HTMLInputElement).value.trim();
+                const vpStr = (document.getElementById(`m${i}-vp`) as HTMLInputElement).value.trim();
+                const dirStr = (document.getElementById(`m${i}-dir`) as HTMLInputElement).value.trim();
+    
+                if (!vStr && !vpStr && !dirStr) {
+                    motorData.push('0,0,0'); // Default for empty motor
+                    continue;
+                }
+    
+                const vArr = (vStr || '0').split('/').map(s => s.trim());
+                const vpArr = (vpStr || '0').split('/').map(s => s.trim());
+                const dirArr = (dirStr || '0').split('/').map(s => s.trim());
+    
+                if (vArr.length !== vpArr.length || vArr.length !== dirArr.length) {
+                    setNotification(`Lỗi dữ liệu M${i}: Số lượng giá trị không khớp.`, true);
+                    return;
+                }
+    
+                const sequenceParts: string[] = [];
+                for (let j = 0; j < vArr.length; j++) {
+                    const v = vArr[j] || '0';
+                    const vp = vpArr[j] || '0';
+                    const dir = dirArr[j] || '0';
+                    sequenceParts.push(`${v},${vp},${dir}`);
+                }
+                motorData.push(sequenceParts.join('|'));
+            }
+            const dataString = motorData.join(';');
+    
+            const encoder = new TextEncoder();
+            await uartCharacteristic.writeValue(encoder.encode(dataString + '\n'));
+            setNotification('Đã gửi dữ liệu Thành Công');
+    
+        } catch (error) {
+            console.error('Lỗi gửi dữ liệu:', error);
+            setNotification('Gửi dữ liệu Thất Bại', true);
+        }
+    }
+
+    function handleClear() {
+        for (let i = 1; i <= 4; i++) {
+            (document.getElementById(`m${i}-v`) as HTMLInputElement).value = '';
+            (document.getElementById(`m${i}-vp`) as HTMLInputElement).value = '';
+            (document.getElementById(`m${i}-dir`) as HTMLInputElement).value = '';
+        }
+        setNotification('Đã xóa dữ liệu trên App');
     }
 
     // --- Arduino Code Modal ---
@@ -281,7 +287,7 @@ function App() {
         
         const modalTitle = document.createElement('h2');
         modalTitle.className = 'modal-title';
-        modalTitle.textContent = 'Mã Arduino (Handshake)';
+        modalTitle.textContent = 'Mã Nguồn & Hướng Dẫn Arduino';
         
         const closeButton = document.createElement('button');
         closeButton.className = 'modal-close-btn';
@@ -294,65 +300,228 @@ function App() {
         modalBody.className = 'modal-body';
         
         const instructionsHTML = `
-            <p style="color: green; font-weight: bold;">Mã nguồn này thực hiện cơ chế "bắt tay" (handshake).</p>
+            <h3>1. Cài đặt Thư viện</h3>
+            <p>Mở Arduino IDE, vào <b>Sketch &rarr; Include Library &rarr; Manage Libraries...</b>. Tìm và cài đặt thư viện <b>"AccelStepper"</b> của Mike McCauley.</p>
+            <h3>2. Kết nối Phần cứng</h3>
+            <p><b>Lưu ý:</b> Sử dụng module Bluetooth Low Energy (BLE) như <b>HM-10</b> hoặc <b>AT-09</b>.</p>
             <ul>
-                <li>Nó sẽ chờ nhận tín hiệu "PING" từ ứng dụng.</li>
-                <li>Khi nhận được "PING", nó sẽ gửi lại tín hiệu "ACK" để xác nhận kết nối.</li>
-                <li>Điều này đảm bảo trạng thái trên app và Arduino luôn đồng bộ.</li>
+                <li><b>Module BLE &rarr; Arduino Nano:</b>
+                    <ul>
+                        <li>VCC &rarr; 5V</li>
+                        <li>GND &rarr; GND</li>
+                        <li>TX &rarr; Pin D10</li>
+                        <li>RX &rarr; Pin D11</li>
+                    </ul>
+                </li>
+                <li><b>Driver Động cơ &rarr; Arduino Nano:</b>
+                    <ul>
+                        <li>M1: STEP &rarr; D2, DIR &rarr; D3</li>
+                        <li>M2: STEP &rarr; D4, DIR &rarr; D5</li>
+                        <li>M3: STEP &rarr; D6, DIR &rarr; D7</li>
+                        <li>M4: STEP &rarr; D8, DIR &rarr; D9</li>
+                    </ul>
+                </li>
             </ul>
+             <h3>3. Nạp mã cho Arduino</h3>
         `;
         
         const arduinoCodeString = `
 #include <SoftwareSerial.h>
+#include <AccelStepper.h>
+
+#define MotorInterfaceType 1
+
+AccelStepper stepper1(MotorInterfaceType, 2, 3);
+AccelStepper stepper2(MotorInterfaceType, 4, 5);
+AccelStepper stepper3(MotorInterfaceType, 6, 7);
+AccelStepper stepper4(MotorInterfaceType, 8, 9);
+AccelStepper* steppers[] = {&stepper1, &stepper2, &stepper3, &stepper4};
 
 SoftwareSerial bleSerial(10, 11); // RX, TX
 
-String inputBuffer = "";
-bool commandReady = false;
+const long STEPS_PER_REV = 3200;
+const int MAX_SEQUENCE_STEPS = 10;
+
+struct MotorStep {
+  long steps;
+  float speed;
+};
+
+MotorStep motorSequences[4][MAX_SEQUENCE_STEPS];
+int sequenceLengths[4] = {0};
+int currentStepIndex[4] = {0};
+bool isRunning = false;
 
 void setup() {
   Serial.begin(9600);
-  bleSerial.begin(9600);
-  inputBuffer.reserve(50);
+  bleSerial.begin(9600); 
 
-  delay(100);
-  while(bleSerial.available()) {
-    bleSerial.read();
+  for (int i=0; i<4; i++) {
+    steppers[i]->setMaxSpeed(8000.0); // Increased max speed for better RPM accuracy
+    steppers[i]->setAcceleration(1000.0); // Add acceleration for smoother start/stop
   }
-  
-  Serial.println("Arduino san sang. Cho ket noi...");
 }
 
 void loop() {
-  // Read incoming data from Bluetooth
-  while (bleSerial.available()) {
-    char c = bleSerial.read();
-    
-    // Check for newline character (ASCII code 10)
-    if (c == 10) { 
-      commandReady = true;
-      break; 
-    } else if (c >= 32) {
-      inputBuffer += c;
-    }
+  // Check for incoming commands from the app
+  if (bleSerial.available()) {
+    String command = bleSerial.readStringUntil('\\n');
+    command.trim();
+    parseCommand(command);
   }
 
-  // If a full command has been received
-  if (commandReady) {
-    inputBuffer.trim();
-    
-    if (inputBuffer.equals("PING")) {
-      Serial.println("Da nhan PING, dang gui ACK...");
-      // Send Acknowledge back to the app
-      bleSerial.println("ACK"); 
+  // If the machine is running, execute motor steps
+  if (isRunning) {
+    // These calls must be made as frequently as possible
+    steppers[0]->run();
+    steppers[1]->run();
+    steppers[2]->run();
+    steppers[3]->run();
+
+    // After running, check if any motor has finished its move
+    // and needs the next sequence step loaded.
+    for (int i=0; i<4; i++) {
+      checkAndLoadNextStep(steppers[i], i);
     }
-    
-    // Reset for the next command
-    inputBuffer = "";
-    commandReady = false;
+
+    // Check if all motors have completed all their sequences
+    bool allSequencesDone = true;
+    for (int i = 0; i < 4; i++) {
+      // A motor's sequence is not done if it's still moving OR 
+      // if it has stopped but still has more steps in its sequence list.
+      if (steppers[i]->distanceToGo() != 0 || currentStepIndex[i] < sequenceLengths[i]) {
+        allSequencesDone = false;
+        break;
+      }
+    }
+
+    if (allSequencesDone) {
+      isRunning = false;
+      Serial.println("All sequences complete.");
+      bleSerial.println("All sequences complete."); // Notify app
+    }
   }
 }
-`;
+
+void checkAndLoadNextStep(AccelStepper* stepper, int motorIndex) {
+    // If the motor is not busy and there are more steps in its sequence
+    if (stepper->distanceToGo() == 0) {
+        if (currentStepIndex[motorIndex] < sequenceLengths[motorIndex]) {
+            MotorStep next = motorSequences[motorIndex][currentStepIndex[motorIndex]];
+            stepper->moveTo(stepper->currentPosition() + next.steps);
+            stepper->setSpeed(next.speed);
+            currentStepIndex[motorIndex]++;
+        }
+    }
+}
+
+void parseCommand(String command) {
+  Serial.println("Received: " + command);
+  if (command.equalsIgnoreCase("START")) {
+    startMotors();
+  } else if (command.equalsIgnoreCase("PAUSE")) {
+    isRunning = false;
+    Serial.println("Execution paused.");
+    bleSerial.println("Execution paused.");
+  } else {
+    // Any other string is assumed to be motor data
+    parseDataString(command);
+  }
+}
+
+void startMotors() {
+    bool hasData = false;
+    for(int i=0; i<4; i++) if (sequenceLengths[i] > 0) hasData = true;
+
+    if (hasData) {
+        // Reset positions and sequence indices for all motors
+        for(int i=0; i<4; i++) {
+            currentStepIndex[i] = 0;
+            steppers[i]->setCurrentPosition(0);
+        }
+
+        // Load the first step for all motors that have a sequence
+        for(int i=0; i<4; i++) {
+            checkAndLoadNextStep(steppers[i], i);
+        }
+
+        isRunning = true;
+        Serial.println("Starting execution...");
+        bleSerial.println("Starting execution...");
+    } else {
+        Serial.println("No data to start.");
+        bleSerial.println("No data to start.");
+    }
+}
+
+void parseDataString(String data) {
+  // Stop any current execution when new data is received
+  isRunning = false; 
+  for(int i=0; i<4; i++) {
+    sequenceLengths[i] = 0; // Clear old sequences
+    steppers[i]->stop(); // Immediately stop the motor
+  }
+
+  int motorIndex = 0;
+  int lastDelim = -1;
+  // Parse M1;M2;M3;
+  for (int i = 0; i < data.length() && motorIndex < 4; i++) {
+    if (data.charAt(i) == ';') {
+      String motorPart = data.substring(lastDelim + 1, i);
+      parseMotorSequence(motorPart, motorIndex);
+      lastDelim = i;
+      motorIndex++;
+    }
+  }
+  // Parse M4 (the last part without a trailing ';')
+  String lastMotorPart = data.substring(lastDelim + 1);
+  if (lastMotorPart.length() > 0 && motorIndex < 4) {
+      parseMotorSequence(lastMotorPart, motorIndex);
+  }
+  
+  Serial.println("Data parsed and stored.");
+  bleSerial.println("Data parsed and stored.");
+}
+
+void parseMotorSequence(String sequence, int motorIndex) {
+  int stepIndex = 0;
+  int lastPipe = -1;
+  // Parse V1,VP1,D1|V2,VP2,D2
+  for (int i = 0; i < sequence.length() && stepIndex < MAX_SEQUENCE_STEPS; i++) {
+    if (sequence.charAt(i) == '|') {
+      String stepPart = sequence.substring(lastPipe + 1, i);
+      parseSingleStep(stepPart, motorIndex, stepIndex);
+      lastPipe = i;
+      stepIndex++;
+    }
+  }
+  // Parse the last step part
+  String lastStepPart = sequence.substring(lastPipe + 1);
+  if (lastStepPart.length() > 0 && stepIndex < MAX_SEQUENCE_STEPS) {
+      parseSingleStep(lastStepPart, motorIndex, stepIndex);
+      stepIndex++;
+  }
+  sequenceLengths[motorIndex] = stepIndex;
+}
+
+void parseSingleStep(String stepData, int motorIndex, int stepIndex) {
+  int firstComma = stepData.indexOf(',');
+  int secondComma = stepData.lastIndexOf(',');
+
+  if (firstComma == -1 || secondComma == -1 || firstComma == secondComma) return;
+
+  float revolutions = stepData.substring(0, firstComma).toFloat();
+  float rpm = stepData.substring(firstComma + 1, secondComma).toFloat();
+  int direction = stepData.substring(secondComma + 1).toInt();
+
+  MotorStep current;
+  // Calculate total steps, applying direction
+  current.steps = revolutions * STEPS_PER_REV * (direction == 1 ? 1 : -1);
+  // Calculate speed in steps/sec, applying direction
+  current.speed = (rpm * STEPS_PER_REV / 60.0) * (direction == 1 ? 1 : -1);
+  
+  motorSequences[motorIndex][stepIndex] = current;
+}`;
 
         modalBody.innerHTML = instructionsHTML;
 
@@ -393,22 +562,20 @@ void loop() {
     arduinoCodeButton.textContent = 'Xem mã Arduino';
     arduinoCodeButton.id = 'arduino-code-btn';
     appContainer.appendChild(arduinoCodeButton);
-    
-    // --- Attach Event Listeners ---
     arduinoCodeButton.addEventListener('click', showArduinoCodeModal);
+
     connectButton.addEventListener('click', () => {
-        if (connectionState === 'CONNECTED') {
+        if (bluetoothDevice && bluetoothDevice.gatt.connected) {
             handleDisconnect();
         } else {
             handleConnect();
         }
     });
 
-    // Dummy listeners for other buttons (they are disabled anyway in this version)
-    sendButton.addEventListener('click', () => console.log('Send Clicked'));
-    startButton.addEventListener('click', () => console.log('Start Clicked'));
-    pauseButton.addEventListener('click', () => console.log('Pause Clicked'));
-    clearButton.addEventListener('click', () => console.log('Clear Clicked'));
+    sendButton.addEventListener('click', handleSend);
+    startButton.addEventListener('click', () => sendBleCommand('START'));
+    pauseButton.addEventListener('click', () => sendBleCommand('PAUSE'));
+    clearButton.addEventListener('click', handleClear);
 
     return appContainer;
 }
