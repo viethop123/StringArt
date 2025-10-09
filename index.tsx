@@ -3,8 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-// Fix for TypeScript error on line 121: Property 'bluetooth' does not exist on type 'Navigator'.
-// The Web Bluetooth API is not yet part of the standard TypeScript DOM library definitions.
+// Fix for TypeScript error: Property 'bluetooth' does not exist on type 'Navigator'.
 declare global {
     interface Navigator {
         bluetooth: any;
@@ -16,92 +15,70 @@ function App() {
     appContainer.id = 'app-container';
 
     // --- State Management ---
-    type ConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED';
-    let connectionState: ConnectionState = 'DISCONNECTED';
-    
     let bluetoothDevice: any = null;
     let txCharacteristic: any = null;
-    const commandQueue: string[] = [];
-    let isSending = false;
+    let isConnected = false;
 
-    // --- DOM Elements (defined early for access in state updates) ---
+    // --- DOM Elements ---
     const connectButton = document.createElement('button');
     const sendButton = document.createElement('button');
     const startButton = document.createElement('button');
     const pauseButton = document.createElement('button');
+    const clearButton = document.createElement('button');
     const notificationInput = document.createElement('input');
+    const actionButtons = [sendButton, startButton, pauseButton, clearButton];
 
     // --- UI State Update Function ---
-    function updateUIState(newState: ConnectionState) {
-        connectionState = newState;
-        switch (newState) {
-            case 'DISCONNECTED':
-                setNotification('Đã ngắt kết nối. Vui lòng kết nối lại.', true);
-                connectButton.textContent = 'Connect';
-                connectButton.disabled = false;
-                sendButton.disabled = true;
-                startButton.disabled = true;
-                pauseButton.disabled = true;
-                break;
-            case 'CONNECTING':
-                setNotification('Đang kết nối...');
-                connectButton.disabled = true;
-                sendButton.disabled = true;
-                startButton.disabled = true;
-                pauseButton.disabled = true;
-                break;
-            case 'CONNECTED':
-                setNotification('Đã kết nối Bluetooth thành công!');
-                connectButton.textContent = 'Disconnect';
-                connectButton.disabled = false;
-                sendButton.disabled = false;
-                startButton.disabled = false;
-                pauseButton.disabled = false;
-                break;
-        }
-    }
+    function updateUIState(connected: boolean) {
+        isConnected = connected;
 
-    // --- Command Queue for reliable BLE communication ---
-    async function processCommandQueue() {
-        if (isSending || commandQueue.length === 0 || connectionState !== 'CONNECTED') {
-            return;
-        }
-        isSending = true;
-    
-        const command = commandQueue.shift();
-        if (command && txCharacteristic) {
-            try {
-                const encoder = new TextEncoder();
-                await txCharacteristic.writeValue(encoder.encode(command + '\n'));
-                const shortCmd = command.length > 20 ? `${command.substring(0, 20)}...` : command;
-                setNotification(`Đã gửi: '${shortCmd}'`);
-            } catch (error) {
-                console.error(`Lỗi gửi lệnh ${command}:`, error);
-                setNotification(`Lỗi nghiêm trọng khi gửi lệnh.`, true);
-                onDisconnected(); // Treat send error as a disconnection
-                return;
-            }
-        }
+        connectButton.textContent = connected ? 'Disconnect' : 'Connect';
         
-        setTimeout(() => {
-            isSending = false;
-            if (commandQueue.length > 0) {
-                processCommandQueue();
-            } else {
-                setNotification("Sẵn sàng nhận lệnh tiếp theo.");
-            }
-        }, 150);
-    }
+        actionButtons.forEach(btn => {
+            btn.disabled = !connected;
+        });
 
-    function queueCommand(command: string) {
-        if (connectionState !== 'CONNECTED') {
+        if (connected) {
+            setNotification('Đã kết nối. Sẵn sàng nhận lệnh.');
+        } else {
+            setNotification('Đã ngắt kết nối. Vui lòng kết nối lại.', true);
+        }
+    }
+    
+    // --- Simple, reliable BLE command sending ---
+    async function sendBleCommand(command: string) {
+        if (!isConnected || !txCharacteristic) {
             setNotification('Lỗi: Chưa kết nối Bluetooth.', true);
             return;
         }
-        const shortCmd = command.length > 20 ? `${command.substring(0, 20)}...` : command;
-        setNotification(`Đang xếp lệnh '${shortCmd}' vào hàng đợi...`);
-        commandQueue.push(command);
-        processCommandQueue();
+
+        // 1. Lock UI
+        actionButtons.forEach(btn => btn.disabled = true);
+        connectButton.disabled = true;
+        const shortCmd = command.length > 30 ? `${command.substring(0, 30)}...` : command;
+        setNotification(`Đang gửi: '${shortCmd}'`);
+
+        try {
+            // 2. Send command
+            const encoder = new TextEncoder();
+            await txCharacteristic.writeValue(encoder.encode(command + '\n'));
+            setNotification(`Đã gửi: '${shortCmd}'`);
+
+            // 3. Wait for a safe delay
+            await new Promise(resolve => setTimeout(resolve, 150));
+
+        } catch (error) {
+            console.error(`Lỗi gửi lệnh ${command}:`, error);
+            setNotification(`Lỗi nghiêm trọng khi gửi lệnh.`, true);
+            handleDisconnect(); // Treat send error as a disconnection
+        } finally {
+            // 4. Unlock UI
+            if (isConnected) {
+                actionButtons.forEach(btn => btn.disabled = false);
+                setNotification('Sẵn sàng nhận lệnh tiếp theo.');
+            }
+            connectButton.disabled = false;
+        }
     }
     
     // Header
@@ -182,7 +159,6 @@ function App() {
     pauseButton.id = 'pause-btn';
     controlsContainer.appendChild(pauseButton);
     
-    const clearButton = document.createElement('button');
     clearButton.textContent = 'Clear';
     clearButton.id = 'clear-btn';
     controlsContainer.appendChild(clearButton);
@@ -201,7 +177,7 @@ function App() {
     appContainer.appendChild(notificationArea);
     
     // Set initial UI state
-    updateUIState('DISCONNECTED');
+    updateUIState(false);
     setNotification('Sẵn sàng kết nối Bluetooth.', false);
 
 
@@ -214,13 +190,18 @@ function App() {
     }
 
     async function handleConnect() {
-        if (connectionState !== 'DISCONNECTED') return;
+        if (isConnected) {
+            handleDisconnect();
+            return;
+        }
 
         const UART_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
         const TX_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
 
         try {
-            updateUIState('CONNECTING');
+            connectButton.disabled = true;
+            setNotification('Đang tìm kiếm thiết bị...');
+            
             bluetoothDevice = await navigator.bluetooth.requestDevice({
                 filters: [{ services: [UART_SERVICE_UUID] }],
                 optionalServices: [UART_SERVICE_UUID]
@@ -232,7 +213,7 @@ function App() {
             txCharacteristic = await service.getCharacteristic(TX_CHARACTERISTIC_UUID);
 
             bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
-            updateUIState('CONNECTED');
+            updateUIState(true);
 
         } catch (error) {
             console.error('Lỗi kết nối Bluetooth:', error);
@@ -241,25 +222,25 @@ function App() {
             } else {
                 setNotification('Lỗi kết nối Bluetooth', true);
             }
-            updateUIState('DISCONNECTED');
+            updateUIState(false);
+        } finally {
+            connectButton.disabled = false;
         }
     }
 
     function onDisconnected() {
-        if (connectionState === 'DISCONNECTED') return; // Prevent multiple calls
+        if (!isConnected) return; // Prevent multiple calls
         
-        commandQueue.length = 0; // CRITICAL: Clear queue on disconnect
-        isSending = false;
         bluetoothDevice = null;
         txCharacteristic = null;
-        updateUIState('DISCONNECTED');
+        updateUIState(false);
     }
 
     function handleDisconnect() {
         if (bluetoothDevice && bluetoothDevice.gatt.connected) {
-            bluetoothDevice.gatt.disconnect(); // This will trigger onDisconnected event
+            bluetoothDevice.gatt.disconnect();
         } else {
-           onDisconnected(); // Fallback for cleanup
+           onDisconnected();
         }
     }
     
@@ -275,27 +256,33 @@ function App() {
                 continue;
             }
 
+            // Provide default values if some are missing, but not all
             const vArr = (vStr || '0').split('/');
             const vpArr = (vpStr || '0').split('/');
             const dirArr = (dirStr || '0').split('/');
+            
+            const maxLength = Math.max(vArr.length, vpArr.length, dirArr.length);
 
-            if (vArr.length !== vpArr.length || vArr.length !== dirArr.length) {
-                setNotification(`Lỗi dữ liệu M${i}: Số lượng giá trị không khớp.`, true);
-                return;
+            if (maxLength > 1 && (vArr.length !== vpArr.length || vArr.length !== dirArr.length)) {
+                if (vArr.length !== maxLength || vpArr.length !== maxLength || dirArr.length !== maxLength) {
+                    setNotification(`Lỗi M${i}: Các trường (V, V/P, Chiều) phải có cùng số lượng giá trị khi có nhiều bước.`, true);
+                    return;
+                }
             }
 
+
             const sequenceParts: string[] = [];
-            for (let j = 0; j < vArr.length; j++) {
-                const v = vArr[j].trim() || '0';
-                const vp = vpArr[j].trim() || '0';
-                const dir = dirArr[j].trim() || '0';
+            for (let j = 0; j < maxLength; j++) {
+                const v = (vArr[j] || vArr[0] || '0').trim();
+                const vp = (vpArr[j] || vpArr[0] || '0').trim();
+                const dir = (dirArr[j] || dirArr[0] || '0').trim();
                 sequenceParts.push(`${v},${vp},${dir}`);
             }
             motorData.push(sequenceParts.join('|'));
         }
         
         const dataString = motorData.join(';');
-        queueCommand(dataString);
+        sendBleCommand(dataString);
     }
 
     function handleClear() {
@@ -355,28 +342,24 @@ function App() {
                     </ul>
                 </li>
             </ul>
-             <h3>3. Nạp mã cho Arduino (Phiên bản sửa lỗi cuối cùng)</h3>
-             <p>Phiên bản này đã sửa 2 lỗi nghiêm trọng: <b>(1) Động cơ chạy chậm</b> và <b>(2) Motor 3, 4 không nhận lệnh.</b> Vui lòng sử dụng mã này.</p>
+             <h3>3. Nạp mã cho Arduino (Phiên bản cuối cùng, đã sửa lỗi)</h3>
+             <p>Phiên bản này đã sửa 3 lỗi nghiêm trọng: <b>(1) Động cơ chạy chậm</b>, <b>(2) Motor 3, 4 không nhận lệnh</b> và <b>(3) Sử dụng dữ liệu cũ khi có lỗi.</b> Vui lòng sử dụng mã này.</p>
         `;
         
         const arduinoCodeString = `
 #include <SoftwareSerial.h>
 #include <AccelStepper.h>
 
-// Định nghĩa giao diện STEP/DIR cho driver
 #define MotorInterfaceType AccelStepper::DRIVER
 
-// Khai báo 4 motor
 AccelStepper stepper1(MotorInterfaceType, 2, 3);
 AccelStepper stepper2(MotorInterfaceType, 4, 5);
 AccelStepper stepper3(MotorInterfaceType, 6, 7);
 AccelStepper stepper4(MotorInterfaceType, 8, 9);
 AccelStepper* steppers[] = {&stepper1, &stepper2, &stepper3, &stepper4};
 
-// Khai báo Bluetooth HM-10
 SoftwareSerial bleSerial(10, 11); // RX, TX
 
-// --- CẤU HÌNH VÀ BIẾN TOÀN CỤC ---
 const long STEPS_PER_REV = 3200;
 const int MAX_SEQUENCE_STEPS = 10;
 
@@ -390,36 +373,32 @@ int sequenceLengths[4] = {0};
 int currentStepIndex[4] = {0};
 bool isRunning = false;
 
-// Biến để đọc Bluetooth không làm chậm hệ thống
 String bleCommand = "";
 bool commandComplete = false;
 
-// --- HÀM KHỞI TẠO ---
 void setup() {
   Serial.begin(9600);
   bleSerial.begin(9600);
-  Serial.println("Arduino san sang. Phien ban sua loi toc do va phan tich.");
+  Serial.println("Arduino san sang. Phien ban on dinh.");
 
   for (int i = 0; i < 4; i++) {
-    steppers[i]->setMaxSpeed(40000); // Giới hạn tốc độ rất cao, tốc độ thực tế sẽ được đặt cho từng bước
+    steppers[i]->setMaxSpeed(40000); 
     steppers[i]->setAcceleration(2000);
   }
 }
 
-// --- VÒNG LẶP CHÍNH (ĐÃ TỐI ƯU HÓA) ---
 void loop() {
-  // 1. ĐỌC BLUETOOTH MÀ KHÔNG DỪNG CHƯƠNG TRÌNH (NON-BLOCKING)
-  // Việc này cực kỳ quan trọng để motor chạy đúng tốc độ.
+  // 1. NON-BLOCKING BLUETOOTH READER
   while (bleSerial.available() > 0 && !commandComplete) {
     char inChar = (char)bleSerial.read();
     if (inChar == '\\n') {
       commandComplete = true;
-    } else if (inChar != '\\r') { // Bỏ qua ký tự carriage return
+    } else if (inChar != '\\r') {
       bleCommand += inChar;
     }
   }
 
-  // 2. NẾU ĐÃ NHẬN ĐỦ LỆNH, TIẾN HÀNH XỬ LÝ
+  // 2. PROCESS COMPLETE COMMAND
   if (commandComplete) {
     bleCommand.trim();
     if (bleCommand.length() > 0) {
@@ -430,12 +409,11 @@ void loop() {
     commandComplete = false;
   }
   
-  // 3. NẾU MÁY KHÔNG Ở TRẠNG THÁI CHẠY, KHÔNG LÀM GÌ THÊM
   if (!isRunning) {
     return;
   }
   
-  // 4. VÒNG LẶP HIỆU NĂNG CAO ĐỂ ĐIỀU KHIỂN MOTOR
+  // 3. HIGH-PERFORMANCE MOTOR CONTROL LOOP
   bool isAnyMotorStillRunning = false;
   for (int i = 0; i < 4; i++) {
     if (steppers[i]->distanceToGo() == 0) {
@@ -452,7 +430,6 @@ void loop() {
   }
 }
 
-// Nạp bước chạy tiếp theo cho một motor
 void loadNextStep(int motorIndex) {
   if (currentStepIndex[motorIndex] < sequenceLengths[motorIndex]) {
     MotorStep next = motorSequences[motorIndex][currentStepIndex[motorIndex]];
@@ -462,7 +439,6 @@ void loadNextStep(int motorIndex) {
   }
 }
 
-// Phân loại lệnh nhận được
 void parseCommand(String command) {
   if (command.equalsIgnoreCase("START")) {
     startMotors();
@@ -476,7 +452,6 @@ void parseCommand(String command) {
   }
 }
 
-// Chuẩn bị và bắt đầu chạy
 void startMotors() {
   bool hasData = false;
   for (int i = 0; i < 4; i++) if (sequenceLengths[i] > 0) hasData = true;
@@ -506,28 +481,30 @@ void startMotors() {
 
 void parseDataString(String data) {
     isRunning = false;
-    for(int i = 0; i < 4; i++) sequenceLengths[i] = 0;
+    // CRITICAL: Clear all old data before parsing new data.
+    for(int i = 0; i < 4; i++) {
+        sequenceLengths[i] = 0;
+        for (int j = 0; j < MAX_SEQUENCE_STEPS; j++) {
+            motorSequences[i][j] = {0, 0.0f};
+        }
+    }
 
-    int fromIndex = 0;
+    String dataCopy = data;
     for (int motorIndex = 0; motorIndex < 4; motorIndex++) {
-        int delimPos = data.indexOf(';', fromIndex);
+        int separator = dataCopy.indexOf(';');
         String motorPart;
 
-        if (delimPos != -1) {
-            motorPart = data.substring(fromIndex, delimPos);
-            fromIndex = delimPos + 1;
+        if (separator != -1) {
+            motorPart = dataCopy.substring(0, separator);
+            dataCopy = dataCopy.substring(separator + 1);
         } else {
-            motorPart = data.substring(fromIndex);
-            fromIndex = data.length() + 1;
+            motorPart = dataCopy;
+            dataCopy = ""; 
         }
         
         motorPart.trim();
         Serial.print("Phan tich M"); Serial.print(motorIndex + 1); Serial.print(": '"); Serial.print(motorPart); Serial.println("'");
         parseMotorSequence(motorPart, motorIndex);
-
-        if (fromIndex > data.length()) {
-            break;
-        }
     }
 
     Serial.println("--> Phan tich du lieu hoan tat. San sang de START.");
@@ -541,30 +518,35 @@ void parseMotorSequence(String sequence, int motorIndex) {
   }
   
   int stepIndex = 0;
-  int lastPipe = -1;
-  sequence += "|";
+  String seqCopy = sequence;
 
-  for (int i = 0; i < sequence.length() && stepIndex < MAX_SEQUENCE_STEPS; i++) {
-    if (sequence.charAt(i) == '|') {
-      String stepPart = sequence.substring(lastPipe + 1, i);
-      stepPart.trim();
-      if(stepPart.length() > 0) {
-          parseSingleStep(stepPart, motorIndex, stepIndex);
-          stepIndex++;
+  while(seqCopy.length() > 0 && stepIndex < MAX_SEQUENCE_STEPS) {
+    int separator = seqCopy.indexOf('|');
+    String stepPart;
+    if (separator != -1) {
+      stepPart = seqCopy.substring(0, separator);
+      seqCopy = seqCopy.substring(separator + 1);
+    } else {
+      stepPart = seqCopy;
+      seqCopy = "";
+    }
+    stepPart.trim();
+    if (stepPart.length() > 0) {
+      if (parseSingleStep(stepPart, motorIndex, stepIndex)) {
+        stepIndex++;
       }
-      lastPipe = i;
     }
   }
   sequenceLengths[motorIndex] = stepIndex;
 }
 
-void parseSingleStep(String stepData, int motorIndex, int stepIndex) {
+bool parseSingleStep(String stepData, int motorIndex, int stepIndex) {
   int firstComma = stepData.indexOf(',');
   int secondComma = stepData.lastIndexOf(',');
 
   if (firstComma == -1 || secondComma == -1 || firstComma == secondComma) {
     Serial.print("LOI: Du lieu buoc khong hop le: "); Serial.println(stepData);
-    return;
+    return false;
   }
 
   float revolutions = stepData.substring(0, firstComma).toFloat();
@@ -584,6 +566,8 @@ void parseSingleStep(String stepData, int motorIndex, int stepIndex) {
   Serial.print(", dir="); Serial.print(direction);
   Serial.print(" => steps="); Serial.print(current.steps);
   Serial.print(", speedSteps/s="); Serial.println(current.speed);
+  
+  return true;
 }`;
 
         modalBody.innerHTML = instructionsHTML;
@@ -627,17 +611,10 @@ void parseSingleStep(String stepData, int motorIndex, int stepIndex) {
     appContainer.appendChild(arduinoCodeButton);
     arduinoCodeButton.addEventListener('click', showArduinoCodeModal);
 
-    connectButton.addEventListener('click', () => {
-        if (connectionState === 'CONNECTED') {
-            handleDisconnect();
-        } else {
-            handleConnect();
-        }
-    });
-
+    connectButton.addEventListener('click', handleConnect);
     sendButton.addEventListener('click', handleSend);
-    startButton.addEventListener('click', () => queueCommand('START'));
-    pauseButton.addEventListener('click', () => queueCommand('PAUSE'));
+    startButton.addEventListener('click', () => sendBleCommand('START'));
+    pauseButton.addEventListener('click', () => sendBleCommand('PAUSE'));
     clearButton.addEventListener('click', handleClear);
 
     return appContainer;
