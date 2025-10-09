@@ -1,12 +1,13 @@
-// -----------------------------
-// BLE helper (stable, chunked write)
-// -----------------------------
+// --- BLE + Send (thay thế toàn bộ phần liên quan) ---
+// Dán nguyên đoạn này vào index.js, thay phần cũ
+
 let bluetoothDevice = null;
 let uartCharacteristic = null;
+const CHUNK_SIZE = 20;
+const CHUNK_DELAY_MS = 50; // tăng nhẹ để HM-10/HC-06 ổn định
 
-// Utility: show notification (cập nhật phù hợp UI của bạn)
 function setNotification(msg, isError = false) {
-  const el = document.getElementById('notification-input') || document.getElementById('status') || null;
+  const el = document.getElementById('notification-input') || document.getElementById('status');
   if (el) {
     el.value = msg;
     el.style.color = isError ? '#D32F2F' : '#388E3C';
@@ -16,7 +17,6 @@ function setNotification(msg, isError = false) {
   }
 }
 
-// Connect BLE (HM-10 / AT-09 / HM-10-like UART service)
 async function connectBLE() {
   try {
     setNotification('Đang tìm thiết bị BLE...');
@@ -31,30 +31,25 @@ async function connectBLE() {
     const service = await server.getPrimaryService(0xFFE0);
     uartCharacteristic = await service.getCharacteristic(0xFFE1);
 
-    // Nếu muốn nhận notify từ Arduino (nếu có)
+    // cố gắng subscribe notifications (nếu module hỗ trợ)
     try {
       await uartCharacteristic.startNotifications();
       uartCharacteristic.addEventListener('characteristicvaluechanged', (ev) => {
-        const value = ev.target.value;
-        const decoder = new TextDecoder();
-        const text = decoder.decode(value);
-        console.log('RX:', text.trim());
+        const val = ev.target.value;
+        const text = new TextDecoder().decode(val);
+        console.log('RX from Arduino:', text.trim());
         setNotification('Arduino: ' + text.trim());
       });
     } catch (err) {
-      // Nếu module không hỗ trợ notifications thì bỏ qua
-      console.warn('No notifications:', err);
+      console.warn('No notifications available:', err);
     }
 
-    device.addEventListener('gattserverdisconnected', onDisconnected);
-
+    bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
     document.getElementById('send-btn').disabled = false;
     document.getElementById('start-btn').disabled = false;
     document.getElementById('pause-btn').disabled = false;
     document.getElementById('connect-btn').textContent = 'Disconnect';
-
     setNotification('Đã kết nối Bluetooth ✅');
-    console.log('Connected to BLE device');
   } catch (err) {
     console.error('connectBLE error', err);
     setNotification('Lỗi kết nối Bluetooth', true);
@@ -71,42 +66,78 @@ function onDisconnected() {
   document.getElementById('connect-btn').textContent = 'Connect';
 }
 
-// Chunked write (BLE MTU ~20 bytes typical)
-async function sendBleCommand(command) {
-  if (!uartCharacteristic) {
-    setNotification('Chưa kết nối Bluetooth', true);
-    return;
+async function writeChunks(encoded) {
+  if (!uartCharacteristic) throw new Error('No UART characteristic');
+  const total = encoded.length;
+  let sent = 0;
+  for (let i = 0; i < total; i += CHUNK_SIZE) {
+    const slice = encoded.slice(i, i + CHUNK_SIZE);
+    await uartCharacteristic.writeValue(slice);
+    sent += slice.length;
+    // delay nhẹ để module BLE xử lý, tránh concat lộn xộn
+    await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
   }
+  return sent;
+}
+
+async function sendDataString(dataString) {
+  // Data messages prefixed with DATA:
+  if (!uartCharacteristic) { setNotification('Chưa kết nối Bluetooth', true); return; }
   try {
+    // disable controls while sending
+    toggleControls(false);
     const encoder = new TextEncoder();
-    const encoded = encoder.encode(command + '\n');
-    const CHUNK_SIZE = 20;
-
-    console.log('Sending total bytes:', encoded.length, 'string:', command);
-    const chunkCount = Math.ceil(encoded.length / CHUNK_SIZE);
-
-    for (let i = 0; i < encoded.length; i += CHUNK_SIZE) {
-      const slice = encoded.slice(i, i + CHUNK_SIZE);
-      await uartCharacteristic.writeValue(slice);
-      // nhẹ 25ms để module xử lý, tránh overflow
-      await new Promise(res => setTimeout(res, 25));
-    }
-
-    setNotification(`Đã gửi (${encoded.length} bytes, ${chunkCount} gói)`);
+    const payload = 'DATA:' + dataString + '\n';
+    const encoded = encoder.encode(payload);
+    console.log('Sending DATA length', encoded.length, 'string:', payload);
+    await writeChunks(encoded);
+    setNotification('Đã gửi DATA (' + encoded.length + ' bytes)');
+    // nhỏ delay sau khi gửi toàn bộ
+    await new Promise(r => setTimeout(r, 100));
   } catch (err) {
-    console.error('sendBleCommand error', err);
-    setNotification('Gửi thất bại', true);
+    console.error('sendDataString error', err);
+    setNotification('Gửi DATA thất bại', true);
+  } finally {
+    toggleControls(true);
   }
 }
 
-// Build motor data string and send
-async function handleSend() {
-  if (!uartCharacteristic) {
-    setNotification('Không có kết nối Bluetooth', true);
-    return;
-  }
-
+async function sendControl(cmd) {
+  // Control messages prefixed with CMD:
+  if (!uartCharacteristic) { setNotification('Chưa kết nối Bluetooth', true); return; }
   try {
+    toggleControls(false);
+    const encoder = new TextEncoder();
+    const payload = 'CMD:' + cmd + '\n';
+    const encoded = encoder.encode(payload);
+    console.log('Sending CMD:', payload);
+    await writeChunks(encoded);
+    setNotification('Đã gửi lệnh ' + cmd);
+    await new Promise(r => setTimeout(r, 80));
+  } catch (err) {
+    console.error('sendControl error', err);
+    setNotification('Gửi lệnh thất bại', true);
+  } finally {
+    toggleControls(true);
+  }
+}
+
+function toggleControls(enable) {
+  const s = document.getElementById('send-btn');
+  const st = document.getElementById('start-btn');
+  const p = document.getElementById('pause-btn');
+  if (s) s.disabled = !enable;
+  if (st) st.disabled = !enable;
+  if (p) p.disabled = !enable;
+}
+
+// Build data string from UI and send
+async function handleSend() {
+  if (!uartCharacteristic) { setNotification('Chưa kết nối Bluetooth', true); return; }
+  try {
+    // disable send/start while building+sending
+    toggleControls(false);
+
     const motorData = [];
     for (let i = 1; i <= 4; i++) {
       const vStr = (document.getElementById(`m${i}-v`) || { value: '' }).value.trim();
@@ -114,7 +145,7 @@ async function handleSend() {
       const dirStr = (document.getElementById(`m${i}-dir`) || { value: '' }).value.trim();
 
       if (!vStr && !vpStr && !dirStr) {
-        motorData.push('0,0,0'); // mặc định
+        motorData.push('0,0,0');
         continue;
       }
 
@@ -124,6 +155,7 @@ async function handleSend() {
 
       if (vArr.length !== vpArr.length || vArr.length !== dirArr.length) {
         setNotification(`Lỗi dữ liệu M${i}: số lượng giá trị không khớp`, true);
+        toggleControls(true);
         return;
       }
 
@@ -138,24 +170,17 @@ async function handleSend() {
     }
 
     const dataString = motorData.join(';');
-    console.log('Full dataString:', dataString);
-    await sendBleCommand(dataString);
+    console.log('Prepared DATA string:', dataString);
+    await sendDataString(dataString);
   } catch (err) {
     console.error('handleSend error', err);
     setNotification('Gửi thất bại', true);
+  } finally {
+    toggleControls(true);
   }
 }
 
-// Send simple control commands START / PAUSE
-async function sendControl(cmd) {
-  if (!uartCharacteristic) {
-    setNotification('Không có kết nối Bluetooth', true);
-    return;
-  }
-  await sendBleCommand(cmd);
-}
-
-// Hook buttons (gắn event listeners)
+// Init UI bindings
 function initBleUI() {
   const connectBtn = document.getElementById('connect-btn');
   const sendBtn = document.getElementById('send-btn');
@@ -165,7 +190,7 @@ function initBleUI() {
 
   if (connectBtn) {
     connectBtn.addEventListener('click', async () => {
-      if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+      if (bluetoothDevice && bluetoothDevice.gatt && bluetoothDevice.gatt.connected) {
         bluetoothDevice.gatt.disconnect();
         onDisconnected();
       } else {
@@ -174,8 +199,8 @@ function initBleUI() {
     });
   }
   if (sendBtn) sendBtn.addEventListener('click', handleSend);
-  if (startBtn) startBtn.addEventListener('click', () => sendControl('START'));
-  if (pauseBtn) pauseBtn.addEventListener('click', () => sendControl('PAUSE'));
+  if (startBtn) startBtn.addEventListener('click', async () => { await sendControl('START'); });
+  if (pauseBtn) pauseBtn.addEventListener('click', async () => { await sendControl('PAUSE'); });
   if (clearBtn) clearBtn.addEventListener('click', () => {
     for (let i = 1; i <= 4; i++) {
       const a = document.getElementById(`m${i}-v`);
@@ -188,13 +213,12 @@ function initBleUI() {
     setNotification('Đã xóa dữ liệu trên App');
   });
 
-  // khởi trạng thái nút
+  // initial state
   if (document.getElementById('send-btn')) document.getElementById('send-btn').disabled = true;
   if (document.getElementById('start-btn')) document.getElementById('start-btn').disabled = true;
   if (document.getElementById('pause-btn')) document.getElementById('pause-btn').disabled = true;
 }
 
-// gọi init sau khi DOM load
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initBleUI);
 } else {
