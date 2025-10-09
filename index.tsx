@@ -333,10 +333,18 @@ void setup() {
   Serial.begin(9600);
   bleSerial.begin(9600); 
 
+  // Đợi một chút và dọn sạch bộ đệm BLE khỏi dữ liệu rác khi khởi động
+  delay(200);
+  while(bleSerial.available()) {
+    bleSerial.read();
+  }
+
   for (int i=0; i<4; i++) {
     steppers[i]->setMaxSpeed(8000.0);
     steppers[i]->setAcceleration(2000.0);
   }
+
+  bleSerial.println("System Ready");
 }
 
 void loop() {
