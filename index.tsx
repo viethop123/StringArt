@@ -52,7 +52,7 @@ function App() {
             return;
         }
 
-        // 1. Lock UI
+        // 1. Lock UI to prevent command merging
         actionButtons.forEach(btn => btn.disabled = true);
         connectButton.disabled = true;
         const shortCmd = command.length > 30 ? `${command.substring(0, 30)}...` : command;
@@ -64,7 +64,7 @@ function App() {
             await txCharacteristic.writeValue(encoder.encode(command + '\n'));
             setNotification(`Đã gửi: '${shortCmd}'`);
 
-            // 3. Wait for a safe delay
+            // 3. Wait for a safe delay for BLE stack and Arduino to process
             await new Promise(resolve => setTimeout(resolve, 150));
 
         } catch (error) {
@@ -72,7 +72,7 @@ function App() {
             setNotification(`Lỗi nghiêm trọng khi gửi lệnh.`, true);
             handleDisconnect(); // Treat send error as a disconnection
         } finally {
-            // 4. Unlock UI
+            // 4. Unlock UI if still connected
             if (isConnected) {
                 actionButtons.forEach(btn => btn.disabled = false);
                 setNotification('Sẵn sàng nhận lệnh tiếp theo.');
@@ -91,6 +91,7 @@ function App() {
     // --- Input Filter ---
     function handleInput(event: Event) {
         const input = event.target as HTMLInputElement;
+        // Allow numbers and the '/' separator
         input.value = input.value.replace(/[^0-9/]/g, '');
     }
 
@@ -263,13 +264,13 @@ function App() {
             
             const maxLength = Math.max(vArr.length, vpArr.length, dirArr.length);
 
-            if (maxLength > 1 && (vArr.length !== vpArr.length || vArr.length !== dirArr.length)) {
+            // Simple, robust validation: if multiple steps, all fields must have the same number of steps.
+            if (maxLength > 1) {
                 if (vArr.length !== maxLength || vpArr.length !== maxLength || dirArr.length !== maxLength) {
-                    setNotification(`Lỗi M${i}: Các trường (V, V/P, Chiều) phải có cùng số lượng giá trị khi có nhiều bước.`, true);
+                    setNotification(`Lỗi M${i}: Các trường (V, V/P, Chiều) phải có cùng số lượng giá trị.`, true);
                     return;
                 }
             }
-
 
             const sequenceParts: string[] = [];
             for (let j = 0; j < maxLength; j++) {
@@ -379,16 +380,16 @@ bool commandComplete = false;
 void setup() {
   Serial.begin(9600);
   bleSerial.begin(9600);
-  Serial.println("Arduino san sang. Phien ban on dinh.");
+  Serial.println("Arduino san sang. Phien ban sua loi cuoi cung.");
 
   for (int i = 0; i < 4; i++) {
-    steppers[i]->setMaxSpeed(40000); 
+    steppers[i]->setMaxSpeed(40000); // Set a high absolute max speed
     steppers[i]->setAcceleration(2000);
   }
 }
 
 void loop() {
-  // 1. NON-BLOCKING BLUETOOTH READER
+  // 1. NON-BLOCKING BLUETOOTH READER (ensures motor loop is never starved)
   while (bleSerial.available() > 0 && !commandComplete) {
     char inChar = (char)bleSerial.read();
     if (inChar == '\\n') {
@@ -398,7 +399,7 @@ void loop() {
     }
   }
 
-  // 2. PROCESS COMPLETE COMMAND
+  // 2. PROCESS COMPLETE COMMAND (only when not running motors)
   if (commandComplete) {
     bleCommand.trim();
     if (bleCommand.length() > 0) {
@@ -416,14 +417,18 @@ void loop() {
   // 3. HIGH-PERFORMANCE MOTOR CONTROL LOOP
   bool isAnyMotorStillRunning = false;
   for (int i = 0; i < 4; i++) {
+    // If a motor has finished its move, load the next one
     if (steppers[i]->distanceToGo() == 0) {
       loadNextStep(i);
     }
+    // The run() function must be called as often as possible.
+    // It returns true if the motor is still running.
     if (steppers[i]->run()) {
       isAnyMotorStillRunning = true;
     }
   }
 
+  // If all motors have completed all their steps, stop the machine.
   if (!isAnyMotorStillRunning) {
     isRunning = false;
     Serial.println("!!! HOAN THANH TAT CA CHUOI LENH !!!");
@@ -434,7 +439,7 @@ void loadNextStep(int motorIndex) {
   if (currentStepIndex[motorIndex] < sequenceLengths[motorIndex]) {
     MotorStep next = motorSequences[motorIndex][currentStepIndex[motorIndex]];
     steppers[motorIndex]->setMaxSpeed(next.speed);
-    steppers[motorIndex]->move(next.steps);
+    steppers[motorIndex]->move(next.steps); // move() is relative
     currentStepIndex[motorIndex]++;
   }
 }
@@ -444,7 +449,7 @@ void parseCommand(String command) {
     startMotors();
   } else if (command.equalsIgnoreCase("PAUSE")) {
     isRunning = false;
-    for(int i=0; i<4; i++) steppers[i]->stop();
+    for(int i=0; i<4; i++) steppers[i]->stop(); // stop() is abrupt
     Serial.println("Nhan lenh PAUSE. Da tam dung.");
   } else {
     Serial.println("Nhan chuoi du lieu. Bat dau phan tich...");
@@ -463,12 +468,13 @@ void startMotors() {
   
   for (int i = 0; i < 4; i++) {
     currentStepIndex[i] = 0;
-    steppers[i]->setCurrentPosition(0);
-    steppers[i]->stop();
+    steppers[i]->setCurrentPosition(0); // Reset position for relative moves
+    steppers[i]->stop(); // Clear any previous movement
   }
 
   isRunning = true;
   Serial.println("!!! BAT DAU CHAY !!!");
+  // Print initial step info for debugging
   for (int i = 0; i < 4; i++) {
     if (sequenceLengths[i] > 0) {
       MotorStep firstStep = motorSequences[i][0];
@@ -479,9 +485,10 @@ void startMotors() {
   }
 }
 
+// Robust parser for the data string "V,V/P,D|...;V,V/P,D|...;..."
 void parseDataString(String data) {
     isRunning = false;
-    // CRITICAL: Clear all old data before parsing new data.
+    // CRITICAL: Clear all old data before parsing new data to prevent stale commands.
     for(int i = 0; i < 4; i++) {
         sequenceLengths[i] = 0;
         for (int j = 0; j < MAX_SEQUENCE_STEPS; j++) {
@@ -498,13 +505,16 @@ void parseDataString(String data) {
             motorPart = dataCopy.substring(0, separator);
             dataCopy = dataCopy.substring(separator + 1);
         } else {
+            // This is the last part of the string (or the only part)
             motorPart = dataCopy;
             dataCopy = ""; 
         }
         
         motorPart.trim();
         Serial.print("Phan tich M"); Serial.print(motorIndex + 1); Serial.print(": '"); Serial.print(motorPart); Serial.println("'");
-        parseMotorSequence(motorPart, motorIndex);
+        if (motorPart.length() > 0) {
+            parseMotorSequence(motorPart, motorIndex);
+        }
     }
 
     Serial.println("--> Phan tich du lieu hoan tat. San sang de START.");
@@ -512,11 +522,6 @@ void parseDataString(String data) {
 }
 
 void parseMotorSequence(String sequence, int motorIndex) {
-  if (sequence.length() == 0) {
-    sequenceLengths[motorIndex] = 0;
-    return;
-  }
-  
   int stepIndex = 0;
   String seqCopy = sequence;
 
@@ -530,6 +535,7 @@ void parseMotorSequence(String sequence, int motorIndex) {
       stepPart = seqCopy;
       seqCopy = "";
     }
+    
     stepPart.trim();
     if (stepPart.length() > 0) {
       if (parseSingleStep(stepPart, motorIndex, stepIndex)) {
@@ -544,6 +550,7 @@ bool parseSingleStep(String stepData, int motorIndex, int stepIndex) {
   int firstComma = stepData.indexOf(',');
   int secondComma = stepData.lastIndexOf(',');
 
+  // Ensure there are exactly two commas
   if (firstComma == -1 || secondComma == -1 || firstComma == secondComma) {
     Serial.print("LOI: Du lieu buoc khong hop le: "); Serial.println(stepData);
     return false;
@@ -555,8 +562,9 @@ bool parseSingleStep(String stepData, int motorIndex, int stepIndex) {
 
   MotorStep current;
   current.steps = (long)(revolutions * STEPS_PER_REV * (direction == 1 ? 1 : -1));
-  current.speed = (rpm * STEPS_PER_REV / 60.0f);
-  if (current.speed < 1.0 && rpm > 0) current.speed = 1.0;
+  // Speed is always positive for AccelStepper, direction is handled by steps sign
+  current.speed = (rpm * STEPS_PER_REV / 60.0f); 
+  if (current.speed < 1.0 && rpm > 0) current.speed = 1.0; // Avoid speed 0
 
   motorSequences[motorIndex][stepIndex] = current;
 
