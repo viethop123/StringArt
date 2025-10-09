@@ -357,22 +357,32 @@ void setup() {
   bleSerial.begin(9600); 
 
   for (int i=0; i<4; i++) {
-    steppers[i]->setMaxSpeed(8000.0); // Increased max speed for better RPM accuracy
-    steppers[i]->setAcceleration(1000.0); // Add acceleration for smoother start/stop
+    steppers[i]->setMaxSpeed(8000.0); // Set a high initial max speed
+    steppers[i]->setAcceleration(2000.0); // Add acceleration for smoother start/stop
   }
 }
 
 void loop() {
-  // Check for incoming commands from the app
+  // Use a more robust method to read from BLE to handle long data strings
+  // that might overflow the default 64-byte SoftwareSerial buffer.
   if (bleSerial.available()) {
-    String command = bleSerial.readStringUntil('\\n');
-    command.trim();
-    parseCommand(command);
+    static String command = ""; // Use static to persist data across loop iterations
+    while (bleSerial.available()) {
+      char c = bleSerial.read();
+      if (c == '\\n') {
+        command.trim();
+        parseCommand(command);
+        command = ""; // Reset for the next command
+        break;        // Exit the inner while loop
+      } else {
+        command += c;
+      }
+    }
   }
 
   // If the machine is running, execute motor steps
   if (isRunning) {
-    // These calls must be made as frequently as possible
+    // These run() calls must be made as frequently as possible
     steppers[0]->run();
     steppers[1]->run();
     steppers[2]->run();
@@ -404,12 +414,12 @@ void loop() {
 }
 
 void checkAndLoadNextStep(AccelStepper* stepper, int motorIndex) {
-    // If the motor is not busy and there are more steps in its sequence
+    // If the motor is not busy (has reached its target) and there are more steps in its sequence...
     if (stepper->distanceToGo() == 0) {
         if (currentStepIndex[motorIndex] < sequenceLengths[motorIndex]) {
             MotorStep next = motorSequences[motorIndex][currentStepIndex[motorIndex]];
+            stepper->setMaxSpeed(next.speed); // CRITICAL: Use setMaxSpeed for move-based operations for correct RPM
             stepper->moveTo(stepper->currentPosition() + next.steps);
-            stepper->setSpeed(next.speed);
             currentStepIndex[motorIndex]++;
         }
     }
@@ -515,10 +525,12 @@ void parseSingleStep(String stepData, int motorIndex, int stepIndex) {
   int direction = stepData.substring(secondComma + 1).toInt();
 
   MotorStep current;
-  // Calculate total steps, applying direction
+  // Calculate total steps. Direction is applied here. AccelStepper handles direction
+  // based on whether the target position is > or < the current position.
   current.steps = revolutions * STEPS_PER_REV * (direction == 1 ? 1 : -1);
-  // Calculate speed in steps/sec, applying direction
-  current.speed = (rpm * STEPS_PER_REV / 60.0) * (direction == 1 ? 1 : -1);
+  
+  // Calculate speed in steps/sec. This MUST be a positive value for setMaxSpeed.
+  current.speed = (rpm * STEPS_PER_REV / 60.0);
   
   motorSequences[motorIndex][stepIndex] = current;
 }`;
